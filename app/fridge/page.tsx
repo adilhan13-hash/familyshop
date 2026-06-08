@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import BottomNav from "../../components/BottomNav";
 import { db } from "../../lib/firebase";
 import {
@@ -16,10 +16,20 @@ type FridgeItem = {
   name: string;
 };
 
+type Product = {
+  id: string;
+  icon: string;
+  name: string;
+  category: string;
+  popular: boolean;
+};
+
 export default function FridgePage() {
   const [fridgeItems, setFridgeItems] = useState<FridgeItem[]>([]);
-  const [newItem, setNewItem] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [search, setSearch] = useState("");
+  const [loadingFridge, setLoadingFridge] = useState(true);
+  const [loadingProducts, setLoadingProducts] = useState(true);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, "fridge"), (snapshot) => {
@@ -37,27 +47,66 @@ export default function FridgePage() {
       });
 
       setFridgeItems(items);
-      setLoading(false);
+      setLoadingFridge(false);
     });
 
     return () => unsubscribe();
   }, []);
 
-  async function addToFridge() {
-    const product = newItem.trim();
+  useEffect(() => {
+    const unsubscribe = onSnapshot(collection(db, "products"), (snapshot) => {
+      const items: Product[] = [];
 
-    if (!product) return;
+      snapshot.forEach((document) => {
+        const data = document.data();
 
-    const alreadyExists = fridgeItems.some((item) => item.name === product);
+        if (data.name && data.icon && data.category) {
+          items.push({
+            id: document.id,
+            icon: data.icon,
+            name: data.name,
+            category: data.category,
+            popular: Boolean(data.popular),
+          });
+        }
+      });
+
+      items.sort((a, b) => a.name.localeCompare(b.name, "ru"));
+
+      setProducts(items);
+      setLoadingProducts(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const visibleProducts = useMemo(() => {
+    if (!search.trim()) {
+      return [];
+    }
+
+    const query = search.trim().toLowerCase();
+
+    return products.filter((product) =>
+      product.name.toLowerCase().includes(query)
+    );
+  }, [products, search]);
+
+  async function addToFridge(product: Product) {
+    const fullName = `${product.icon} ${product.name}`;
+
+    const alreadyExists = fridgeItems.some((item) => item.name === fullName);
 
     if (alreadyExists) return;
 
     await addDoc(collection(db, "fridge"), {
-      name: product,
+      name: fullName,
+      productId: product.id,
+      category: product.category,
       createdAt: new Date(),
     });
 
-    setNewItem("");
+    setSearch("");
   }
 
   async function markAsFinished(item: FridgeItem) {
@@ -83,39 +132,19 @@ export default function FridgePage() {
 
         <section className="px-5 space-y-5">
           <div className="rounded-3xl bg-white p-5 shadow-sm">
-            <h2 className="mb-4 text-lg font-semibold">Добавить вручную</h2>
-
-            <div className="flex gap-2">
-              <input
-                value={newItem}
-                onChange={(event) => setNewItem(event.target.value)}
-                className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
-                placeholder="Например: 🍚 Рис"
-              />
-
-              <button
-                onClick={addToFridge}
-                className="rounded-2xl bg-green-500 px-4 py-3 font-medium text-white"
-              >
-                +
-              </button>
-            </div>
-          </div>
-
-          <div className="rounded-3xl bg-white p-5 shadow-sm">
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Есть дома</h2>
+              <h2 className="text-xl font-semibold">Есть дома</h2>
 
               <span className="rounded-full bg-blue-100 px-3 py-1 text-sm text-blue-700">
                 {fridgeItems.length}
               </span>
             </div>
 
-            {loading ? (
+            {loadingFridge ? (
               <p className="text-sm text-slate-500">Загрузка...</p>
             ) : fridgeItems.length === 0 ? (
               <p className="text-sm text-slate-500">
-                Пока холодильник пуст. Купленные товары появятся здесь.
+                Пока холодильник пуст. Найди продукт ниже и добавь его.
               </p>
             ) : (
               <div className="space-y-3">
@@ -146,6 +175,57 @@ export default function FridgePage() {
               </div>
             )}
           </div>
+
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+            placeholder="🔍 Найти продукт и добавить"
+          />
+
+          {search.trim() && (
+            <div className="rounded-3xl bg-white p-5 shadow-sm">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Результаты поиска</h2>
+
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-500">
+                  {visibleProducts.length}
+                </span>
+              </div>
+
+              {loadingProducts ? (
+                <p className="text-sm text-slate-500">Загрузка товаров...</p>
+              ) : visibleProducts.length === 0 ? (
+                <p className="text-sm text-slate-500">Ничего не найдено.</p>
+              ) : (
+                <div className="grid grid-cols-4 gap-3">
+                  {visibleProducts.map((product) => {
+                    const fullName = `${product.icon} ${product.name}`;
+                    const isAdded = fridgeItems.some(
+                      (item) => item.name === fullName
+                    );
+
+                    return (
+                      <button
+                        key={product.id}
+                        onClick={() => addToFridge(product)}
+                        className={`rounded-2xl p-3 text-center text-sm transition ${
+                          isAdded
+                            ? "bg-blue-100 text-blue-700"
+                            : "bg-slate-100 text-slate-900"
+                        }`}
+                      >
+                        <div className="text-2xl">{product.icon}</div>
+                        <div className="mt-1 line-clamp-2 text-xs">
+                          {product.name}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </section>
 
         <BottomNav current="fridge" />
