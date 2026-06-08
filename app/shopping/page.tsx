@@ -89,27 +89,23 @@ export default function ShoppingPage() {
     return ["Популярные", ...uniqueCategories];
   }, [products]);
 
-  const visibleProducts = useMemo(() => {
-    let result = products;
+  const searchResults = useMemo(() => {
+    if (!search.trim()) return [];
 
-    if (search.trim()) {
-      const query = search.trim().toLowerCase();
+    const query = search.trim().toLowerCase();
 
-      return result.filter((product) =>
-        product.name.toLowerCase().includes(query)
-      );
-    }
+    return products.filter((product) =>
+      product.name.toLowerCase().includes(query)
+    );
+  }, [products, search]);
 
+  const categoryProducts = useMemo(() => {
     if (selectedCategory === "Популярные") {
-      result = result.filter((product) => product.popular);
-    } else {
-      result = result.filter(
-        (product) => product.category === selectedCategory
-      );
+      return products.filter((product) => product.popular);
     }
 
-    return result;
-  }, [products, selectedCategory, search]);
+    return products.filter((product) => product.category === selectedCategory);
+  }, [products, selectedCategory]);
 
   async function addProduct(product: Product) {
     const fullName = `${product.icon} ${product.name}`;
@@ -124,6 +120,8 @@ export default function ShoppingPage() {
       category: product.category,
       createdAt: new Date(),
     });
+
+    setSearch("");
   }
 
   async function removeProduct(id: string) {
@@ -137,6 +135,40 @@ export default function ShoppingPage() {
     });
 
     await deleteDoc(doc(db, "shopping", item.id));
+  }
+
+  function ProductGrid({ items }: { items: Product[] }) {
+    if (loadingProducts) {
+      return <p className="text-sm text-slate-500">Загрузка товаров...</p>;
+    }
+
+    if (items.length === 0) {
+      return <p className="text-sm text-slate-500">Ничего не найдено.</p>;
+    }
+
+    return (
+      <div className="grid grid-cols-4 gap-3">
+        {items.map((product) => {
+          const fullName = `${product.icon} ${product.name}`;
+          const isAdded = shoppingList.some((item) => item.name === fullName);
+
+          return (
+            <button
+              key={product.id}
+              onClick={() => addProduct(product)}
+              className={`rounded-2xl p-3 text-center text-sm transition ${
+                isAdded
+                  ? "bg-green-100 text-green-700"
+                  : "bg-slate-100 text-slate-900"
+              }`}
+            >
+              <div className="text-2xl">{product.icon}</div>
+              <div className="mt-1 line-clamp-2 text-xs">{product.name}</div>
+            </button>
+          );
+        })}
+      </div>
+    );
   }
 
   return (
@@ -203,76 +235,59 @@ export default function ShoppingPage() {
             placeholder="🔍 Поиск товара"
           />
 
-          <div className="rounded-3xl bg-white p-5 shadow-sm">
-            <h2 className="mb-4 text-lg font-semibold">Категории</h2>
+          {search.trim() && (
+            <div className="rounded-3xl bg-white p-5 shadow-sm">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Результаты поиска</h2>
 
-            <div className="grid grid-cols-2 gap-3">
-              {categories.map((category) => {
-                const isActive = selectedCategory === category;
-
-                return (
-                  <button
-                    key={category}
-                    onClick={() => {
-                      setSelectedCategory(category);
-                      setSearch("");
-                    }}
-                    className={`rounded-2xl px-4 py-3 text-left text-sm ${
-                      isActive
-                        ? "bg-green-500 text-white"
-                        : "bg-slate-100 text-slate-700"
-                    }`}
-                  >
-                    {category}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="rounded-3xl bg-white p-5 shadow-sm">
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">
-                {search ? "Результаты поиска" : selectedCategory}
-              </h2>
-
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-500">
-                {visibleProducts.length}
-              </span>
-            </div>
-
-            {loadingProducts ? (
-              <p className="text-sm text-slate-500">Загрузка товаров...</p>
-            ) : visibleProducts.length === 0 ? (
-              <p className="text-sm text-slate-500">Ничего не найдено.</p>
-            ) : (
-              <div className="grid grid-cols-4 gap-3">
-                {visibleProducts.map((product) => {
-                  const fullName = `${product.icon} ${product.name}`;
-                  const isAdded = shoppingList.some(
-                    (item) => item.name === fullName
-                  );
-
-                  return (
-                    <button
-                      key={product.id}
-                      onClick={() => addProduct(product)}
-                      className={`rounded-2xl p-3 text-center text-sm transition ${
-                        isAdded
-                          ? "bg-green-100 text-green-700"
-                          : "bg-slate-100 text-slate-900"
-                      }`}
-                    >
-                      <div className="text-2xl">{product.icon}</div>
-                      <div className="mt-1 line-clamp-2 text-xs">
-                        {product.name}
-                      </div>
-                    </button>
-                  );
-                })}
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-500">
+                  {searchResults.length}
+                </span>
               </div>
-            )}
-          </div>
+
+              <ProductGrid items={searchResults} />
+            </div>
+          )}
+
+          {!search.trim() && (
+            <>
+              <div className="rounded-3xl bg-white p-5 shadow-sm">
+                <h2 className="mb-4 text-lg font-semibold">Категории</h2>
+
+                <div className="grid grid-cols-2 gap-3">
+                  {categories.map((category) => {
+                    const isActive = selectedCategory === category;
+
+                    return (
+                      <button
+                        key={category}
+                        onClick={() => setSelectedCategory(category)}
+                        className={`rounded-2xl px-4 py-3 text-left text-sm ${
+                          isActive
+                            ? "bg-green-500 text-white"
+                            : "bg-slate-100 text-slate-700"
+                        }`}
+                      >
+                        {category}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="rounded-3xl bg-white p-5 shadow-sm">
+                <div className="mb-4 flex items-center justify-between">
+                  <h2 className="text-lg font-semibold">{selectedCategory}</h2>
+
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-500">
+                    {categoryProducts.length}
+                  </span>
+                </div>
+
+                <ProductGrid items={categoryProducts} />
+              </div>
+            </>
+          )}
         </section>
 
         <BottomNav current="shopping" />
