@@ -1,35 +1,16 @@
 import Link from "next/link";
 
 type BottomNavProps = {
-  current: "shopping" | "fridge" | "wish" | "ai";
+  current: "shopping" | "fridge" | "wish" | "ai" | "family";
 };
 
 export default function BottomNav({ current }: BottomNavProps) {
   const items = [
-    {
-      key: "shopping",
-      href: "/shopping",
-      icon: "🛒",
-      label: "Покупки",
-    },
-    {
-      key: "fridge",
-      href: "/fridge",
-      icon: "🥛",
-      label: "Холодильник",
-    },
-    {
-      key: "wish",
-      href: "/wish",
-      icon: "⭐",
-      label: "Wish",
-    },
-    {
-      key: "ai",
-      href: "/ai",
-      icon: "🤖",
-      label: "AI Cook",
-    },
+    { key: "shopping", href: "/shopping", icon: "🛒", label: "Покупки" },
+    { key: "fridge", href: "/fridge", icon: "🥛", label: "Холодильник" },
+    { key: "wish", href: "/wish", icon: "⭐", label: "Wish" },
+    { key: "ai", href: "/ai", icon: "🤖", label: "AI" },
+    { key: "family", href: "/family", icon: "👨‍👩‍👧", label: "Семья" },
   ] as const;
 
   return (

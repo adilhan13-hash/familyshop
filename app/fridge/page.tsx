@@ -24,6 +24,8 @@ type Product = {
   popular: boolean;
 };
 
+const familyId = "main";
+
 export default function FridgePage() {
   const [fridgeItems, setFridgeItems] = useState<FridgeItem[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -31,8 +33,11 @@ export default function FridgePage() {
   const [loadingFridge, setLoadingFridge] = useState(true);
   const [loadingProducts, setLoadingProducts] = useState(true);
 
+  const fridgeCollection = collection(db, "families", familyId, "fridge");
+  const shoppingCollection = collection(db, "families", familyId, "shopping");
+
   useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, "fridge"), (snapshot) => {
+    const unsubscribe = onSnapshot(fridgeCollection, (snapshot) => {
       const items: FridgeItem[] = [];
 
       snapshot.forEach((document) => {
@@ -99,7 +104,7 @@ export default function FridgePage() {
 
     if (alreadyExists) return;
 
-    await addDoc(collection(db, "fridge"), {
+    await addDoc(fridgeCollection, {
       name: fullName,
       productId: product.id,
       category: product.category,
@@ -110,16 +115,16 @@ export default function FridgePage() {
   }
 
   async function markAsFinished(item: FridgeItem) {
-    await addDoc(collection(db, "shopping"), {
+    await addDoc(shoppingCollection, {
       name: item.name,
       createdAt: new Date(),
     });
 
-    await deleteDoc(doc(db, "fridge", item.id));
+    await deleteDoc(doc(db, "families", familyId, "fridge", item.id));
   }
 
   async function removeFromFridge(id: string) {
-    await deleteDoc(doc(db, "fridge", id));
+    await deleteDoc(doc(db, "families", familyId, "fridge", id));
   }
 
   return (
