@@ -16,6 +16,11 @@ type ShoppingItem = {
   name: string;
 };
 
+type FridgeItem = {
+  id: string;
+  name: string;
+};
+
 type Product = {
   id: string;
   icon: string;
@@ -28,25 +33,15 @@ const familyId = "main";
 
 export default function ShoppingPage() {
   const [shoppingList, setShoppingList] = useState<ShoppingItem[]>([]);
+  const [fridgeList, setFridgeList] = useState<FridgeItem[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>("Популярные");
   const [search, setSearch] = useState("");
   const [loadingShopping, setLoadingShopping] = useState(true);
   const [loadingProducts, setLoadingProducts] = useState(true);
 
-  const shoppingCollection = collection(
-    db,
-    "families",
-    familyId,
-    "shopping"
-  );
-
-  const fridgeCollection = collection(
-    db,
-    "families",
-    familyId,
-    "fridge"
-  );
+  const shoppingCollection = collection(db, "families", familyId, "shopping");
+  const fridgeCollection = collection(db, "families", familyId, "fridge");
 
   useEffect(() => {
     const unsubscribe = onSnapshot(shoppingCollection, (snapshot) => {
@@ -65,6 +60,27 @@ export default function ShoppingPage() {
 
       setShoppingList(items);
       setLoadingShopping(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(fridgeCollection, (snapshot) => {
+      const items: FridgeItem[] = [];
+
+      snapshot.forEach((document) => {
+        const data = document.data();
+
+        if (data.name) {
+          items.push({
+            id: document.id,
+            name: data.name,
+          });
+        }
+      });
+
+      setFridgeList(items);
     });
 
     return () => unsubscribe();
@@ -145,10 +161,16 @@ export default function ShoppingPage() {
   }
 
   async function markAsBought(item: ShoppingItem) {
-    await addDoc(fridgeCollection, {
-      name: item.name,
-      createdAt: new Date(),
-    });
+    const alreadyInFridge = fridgeList.some(
+      (fridgeItem) => fridgeItem.name === item.name
+    );
+
+    if (!alreadyInFridge) {
+      await addDoc(fridgeCollection, {
+        name: item.name,
+        createdAt: new Date(),
+      });
+    }
 
     await deleteDoc(doc(db, "families", familyId, "shopping", item.id));
   }

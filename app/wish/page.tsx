@@ -8,7 +8,7 @@ import {
   collection,
   deleteDoc,
   doc,
-  getDocs,
+  onSnapshot,
 } from "firebase/firestore";
 
 type WishItem = {
@@ -20,6 +20,7 @@ type WishItem = {
   section: string;
 };
 
+const familyId = "main";
 const sections = ["👨 Он", "👩 Она", "👧 Дети", "🏠 Дом"];
 
 export default function WishPage() {
@@ -31,32 +32,36 @@ export default function WishPage() {
   const [section, setSection] = useState("🏠 Дом");
   const [loading, setLoading] = useState(true);
 
-  async function loadWishItems() {
-    const snapshot = await getDocs(collection(db, "wish"));
+  const wishCollection = collection(db, "families", familyId, "wish");
 
-    const items: WishItem[] = [];
+  useEffect(() => {
+    const unsubscribe = onSnapshot(wishCollection, (snapshot) => {
+      const items: WishItem[] = [];
 
-    snapshot.forEach((document) => {
-      const data = document.data();
+      snapshot.forEach((document) => {
+        const data = document.data();
 
-      items.push({
-        id: document.id,
-        title: data.title || "",
-        price: data.price || "",
-        link: data.link || "",
-        imageUrl: data.imageUrl || "",
-        section: data.section || "🏠 Дом",
+        items.push({
+          id: document.id,
+          title: data.title || "",
+          price: data.price || "",
+          link: data.link || "",
+          imageUrl: data.imageUrl || "",
+          section: data.section || "🏠 Дом",
+        });
       });
+
+      setWishItems(items);
+      setLoading(false);
     });
 
-    setWishItems(items);
-    setLoading(false);
-  }
+    return () => unsubscribe();
+  }, []);
 
   async function addWishItem() {
     if (!title.trim()) return;
 
-    await addDoc(collection(db, "wish"), {
+    await addDoc(wishCollection, {
       title: title.trim(),
       price: price.trim(),
       link: link.trim(),
@@ -70,18 +75,11 @@ export default function WishPage() {
     setLink("");
     setImageUrl("");
     setSection("🏠 Дом");
-
-    await loadWishItems();
   }
 
   async function removeWishItem(id: string) {
-    await deleteDoc(doc(db, "wish", id));
-    await loadWishItems();
+    await deleteDoc(doc(db, "families", familyId, "wish", id));
   }
-
-  useEffect(() => {
-    loadWishItems();
-  }, []);
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
@@ -197,6 +195,7 @@ export default function WishPage() {
                             <a
                               href={item.link}
                               target="_blank"
+                              rel="noopener noreferrer"
                               className="flex-1 rounded-xl bg-blue-500 px-3 py-2 text-center text-sm font-medium text-white"
                             >
                               Открыть
