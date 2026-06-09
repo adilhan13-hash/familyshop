@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useEffect, useRef, useState } from "react";
+import { ReactNode, createContext, useContext, useEffect, useState } from "react";
 import { auth, db } from "../lib/firebase";
 import {
   ApplicationVerifier,
@@ -10,41 +10,80 @@ import {
   signInWithPhoneNumber,
   signOut,
 } from "firebase/auth";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  query,
+  setDoc,
+  updateDoc,
+  where,
+} from "firebase/firestore";
+import ProfileSetup from "./ProfileSetup";
 
 type AuthProviderProps = {
   children: ReactNode;
 };
 
+type FamilyShopUser = {
+  uid: string;
+  phone: string;
+  familyId: string;
+  displayName?: string;
+};
+
+type AuthContextType = {
+  user: User | null;
+  appUser: FamilyShopUser | null;
+  familyId: string | null;
+  logout: () => Promise<void>;
+};
+
 declare global {
   interface Window {
     recaptchaVerifier?: ApplicationVerifier;
-    grecaptcha?: {
-      reset: (widgetId?: number) => void;
-    };
   }
+}
+
+const AuthContext = createContext<AuthContextType>({
+  user: null,
+  appUser: null,
+  familyId: null,
+  logout: async () => {},
+});
+
+export function useFamilyAuth() {
+  return useContext(AuthContext);
+}
+
+function createFamilyId() {
+  return `family_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export default function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(null);
+  const [appUser, setAppUser] = useState<FamilyShopUser | null>(null);
   const [checking, setChecking] = useState(true);
-  const [hasAccess, setHasAccess] = useState(false);
 
   const [phone, setPhone] = useState("+7");
   const [code, setCode] = useState("");
   const [step, setStep] = useState<"phone" | "code">("phone");
   const [message, setMessage] = useState("");
-
-  const confirmationRef = useRef<ConfirmationResult | null>(null);
+  const [confirmation, setConfirmation] = useState<ConfirmationResult | null>(
+    null
+  );
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
 
       if (currentUser) {
-        await checkFamilyAccess(currentUser);
+        const preparedUser = await prepareUser(currentUser);
+        setAppUser(preparedUser);
       } else {
-        setHasAccess(false);
+        setAppUser(null);
       }
 
       setChecking(false);
@@ -53,32 +92,90 @@ export default function AuthProvider({ children }: AuthProviderProps) {
     return () => unsubscribe();
   }, []);
 
-  async function checkFamilyAccess(currentUser: User) {
-    const familyRef = doc(db, "families", "main");
-    const familySnap = await getDoc(familyRef);
+  async function prepareUser(currentUser: User) {
+    const phoneNumber = currentUser.phoneNumber || "";
+    const userRef = doc(db, "users", currentUser.uid);
+    const userSnap = await getDoc(userRef);
 
-    const userPhone = currentUser.phoneNumber || "";
+    if (userSnap.exists()) {
+      const data = userSnap.data();
 
-    if (!familySnap.exists()) {
-      await setDoc(familyRef, {
-        ownerUid: currentUser.uid,
-        ownerPhone: userPhone,
-        allowedPhones: [userPhone],
+      return {
+        uid: currentUser.uid,
+        phone: data.phone || phoneNumber,
+        familyId: data.familyId,
+        displayName: data.displayName || "",
+      };
+    }
+
+    const oldFamilyQuery = query(
+      collection(db, "families"),
+      where("allowedPhones", "array-contains", phoneNumber),
+      limit(1)
+    );
+
+    const oldFamilySnapshot = await getDocs(oldFamilyQuery);
+
+    if (!oldFamilySnapshot.empty) {
+      const oldFamily = oldFamilySnapshot.docs[0];
+      const oldFamilyId = oldFamily.id;
+
+      await setDoc(userRef, {
+        phone: phoneNumber,
+        familyId: oldFamilyId,
+        displayName: "",
         createdAt: new Date(),
       });
 
-      setHasAccess(true);
-      return;
+      return {
+        uid: currentUser.uid,
+        phone: phoneNumber,
+        familyId: oldFamilyId,
+        displayName: "",
+      };
     }
 
-    const family = familySnap.data();
-    const allowedPhones: string[] = family.allowedPhones || [];
+    const familyId = createFamilyId();
+    const familyRef = doc(db, "families", familyId);
 
-    if (family.ownerUid === currentUser.uid || allowedPhones.includes(userPhone)) {
-      setHasAccess(true);
-    } else {
-      setHasAccess(false);
-    }
+    await setDoc(familyRef, {
+      ownerUid: currentUser.uid,
+      ownerPhone: phoneNumber,
+      members: [phoneNumber],
+      allowedPhones: [phoneNumber],
+      createdAt: new Date(),
+    });
+
+    await setDoc(userRef, {
+      phone: phoneNumber,
+      familyId,
+      displayName: "",
+      createdAt: new Date(),
+    });
+
+    return {
+      uid: currentUser.uid,
+      phone: phoneNumber,
+      familyId,
+      displayName: "",
+    };
+  }
+
+  async function saveDisplayName(displayName: string) {
+    if (!user || !appUser) return;
+
+    const cleanName = displayName.trim();
+
+    if (!cleanName) return;
+
+    await updateDoc(doc(db, "users", user.uid), {
+      displayName: cleanName,
+    });
+
+    setAppUser({
+      ...appUser,
+      displayName: cleanName,
+    });
   }
 
   async function sendCode() {
@@ -97,13 +194,13 @@ export default function AuthProvider({ children }: AuthProviderProps) {
         );
       }
 
-      const confirmation = await signInWithPhoneNumber(
+      const result = await signInWithPhoneNumber(
         auth,
         phone,
         window.recaptchaVerifier
       );
 
-      confirmationRef.current = confirmation;
+      setConfirmation(result);
       setStep("code");
       setMessage("SMS-код отправлен.");
     } catch (error) {
@@ -116,12 +213,12 @@ export default function AuthProvider({ children }: AuthProviderProps) {
     try {
       setMessage("");
 
-      if (!confirmationRef.current) {
+      if (!confirmation) {
         setMessage("Сначала отправь SMS-код.");
         return;
       }
 
-      await confirmationRef.current.confirm(code);
+      await confirmation.confirm(code);
       setMessage("Вход выполнен.");
     } catch (error) {
       console.error(error);
@@ -134,6 +231,7 @@ export default function AuthProvider({ children }: AuthProviderProps) {
     setStep("phone");
     setCode("");
     setMessage("");
+    setConfirmation(null);
   }
 
   if (checking) {
@@ -146,7 +244,7 @@ export default function AuthProvider({ children }: AuthProviderProps) {
     );
   }
 
-  if (!user) {
+  if (!user || !appUser) {
     return (
       <main className="min-h-screen bg-slate-100 p-6 text-slate-900">
         <div className="mx-auto max-w-md rounded-3xl bg-white p-6 shadow-sm">
@@ -207,26 +305,20 @@ export default function AuthProvider({ children }: AuthProviderProps) {
     );
   }
 
-  if (!hasAccess) {
-    return (
-      <main className="min-h-screen bg-slate-100 p-6 text-slate-900">
-        <div className="mx-auto max-w-md rounded-3xl bg-white p-6 shadow-sm">
-          <h1 className="text-2xl font-bold">Доступ закрыт</h1>
-
-          <p className="mt-2 text-sm text-slate-500">
-            Этот номер пока не добавлен в семью FamilyShop.
-          </p>
-
-          <button
-            onClick={logout}
-            className="mt-6 w-full rounded-2xl bg-slate-200 px-4 py-3 font-medium text-slate-700"
-          >
-            Выйти
-          </button>
-        </div>
-      </main>
-    );
+  if (!appUser.displayName) {
+    return <ProfileSetup onSave={saveDisplayName} />;
   }
 
-  return <>{children}</>;
+  return (
+    <AuthContext.Provider
+      value={{
+        user,
+        appUser,
+        familyId: appUser.familyId,
+        logout,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
 }

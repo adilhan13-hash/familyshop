@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import BottomNav from "../../components/BottomNav";
+import { useFamilyAuth } from "../../components/AuthProvider";
 import { db } from "../../lib/firebase";
 import {
   addDoc,
@@ -20,10 +21,11 @@ type WishItem = {
   section: string;
 };
 
-const familyId = "main";
 const sections = ["👨 Он", "👩 Она", "👧 Дети", "🏠 Дом"];
 
 export default function WishPage() {
+  const { familyId } = useFamilyAuth();
+
   const [wishItems, setWishItems] = useState<WishItem[]>([]);
   const [title, setTitle] = useState("");
   const [price, setPrice] = useState("");
@@ -32,9 +34,11 @@ export default function WishPage() {
   const [section, setSection] = useState("🏠 Дом");
   const [loading, setLoading] = useState(true);
 
-  const wishCollection = collection(db, "families", familyId, "wish");
-
   useEffect(() => {
+    if (!familyId) return;
+
+    const wishCollection = collection(db, "families", familyId, "wish");
+
     const unsubscribe = onSnapshot(wishCollection, (snapshot) => {
       const items: WishItem[] = [];
 
@@ -56,12 +60,13 @@ export default function WishPage() {
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [familyId]);
 
   async function addWishItem() {
+    if (!familyId) return;
     if (!title.trim()) return;
 
-    await addDoc(wishCollection, {
+    await addDoc(collection(db, "families", familyId, "wish"), {
       title: title.trim(),
       price: price.trim(),
       link: link.trim(),
@@ -78,6 +83,8 @@ export default function WishPage() {
   }
 
   async function removeWishItem(id: string) {
+    if (!familyId) return;
+
     await deleteDoc(doc(db, "families", familyId, "wish", id));
   }
 

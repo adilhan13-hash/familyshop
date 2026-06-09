@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import BottomNav from "../../components/BottomNav";
+import { useFamilyAuth } from "../../components/AuthProvider";
 import { db } from "../../lib/firebase";
 import {
   addDoc,
@@ -29,9 +30,9 @@ type Product = {
   popular: boolean;
 };
 
-const familyId = "main";
-
 export default function ShoppingPage() {
+  const { familyId } = useFamilyAuth();
+
   const [shoppingList, setShoppingList] = useState<ShoppingItem[]>([]);
   const [fridgeList, setFridgeList] = useState<FridgeItem[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -40,10 +41,16 @@ export default function ShoppingPage() {
   const [loadingShopping, setLoadingShopping] = useState(true);
   const [loadingProducts, setLoadingProducts] = useState(true);
 
-  const shoppingCollection = collection(db, "families", familyId, "shopping");
-  const fridgeCollection = collection(db, "families", familyId, "fridge");
-
   useEffect(() => {
+    if (!familyId) return;
+
+    const shoppingCollection = collection(
+      db,
+      "families",
+      familyId,
+      "shopping"
+    );
+
     const unsubscribe = onSnapshot(shoppingCollection, (snapshot) => {
       const items: ShoppingItem[] = [];
 
@@ -63,9 +70,13 @@ export default function ShoppingPage() {
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [familyId]);
 
   useEffect(() => {
+    if (!familyId) return;
+
+    const fridgeCollection = collection(db, "families", familyId, "fridge");
+
     const unsubscribe = onSnapshot(fridgeCollection, (snapshot) => {
       const items: FridgeItem[] = [];
 
@@ -84,7 +95,7 @@ export default function ShoppingPage() {
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [familyId]);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, "products"), (snapshot) => {
@@ -140,13 +151,15 @@ export default function ShoppingPage() {
   }, [products, selectedCategory]);
 
   async function addProduct(product: Product) {
+    if (!familyId) return;
+
     const fullName = `${product.icon} ${product.name}`;
 
     const alreadyExists = shoppingList.some((item) => item.name === fullName);
 
     if (alreadyExists) return;
 
-    await addDoc(shoppingCollection, {
+    await addDoc(collection(db, "families", familyId, "shopping"), {
       name: fullName,
       productId: product.id,
       category: product.category,
@@ -157,16 +170,20 @@ export default function ShoppingPage() {
   }
 
   async function removeProduct(id: string) {
+    if (!familyId) return;
+
     await deleteDoc(doc(db, "families", familyId, "shopping", id));
   }
 
   async function markAsBought(item: ShoppingItem) {
+    if (!familyId) return;
+
     const alreadyInFridge = fridgeList.some(
       (fridgeItem) => fridgeItem.name === item.name
     );
 
     if (!alreadyInFridge) {
-      await addDoc(fridgeCollection, {
+      await addDoc(collection(db, "families", familyId, "fridge"), {
         name: item.name,
         createdAt: new Date(),
       });

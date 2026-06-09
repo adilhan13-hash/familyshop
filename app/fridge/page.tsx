@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import BottomNav from "../../components/BottomNav";
+import { useFamilyAuth } from "../../components/AuthProvider";
 import { db } from "../../lib/firebase";
 import {
   addDoc,
@@ -24,19 +25,20 @@ type Product = {
   popular: boolean;
 };
 
-const familyId = "main";
-
 export default function FridgePage() {
+  const { familyId } = useFamilyAuth();
+
   const [fridgeItems, setFridgeItems] = useState<FridgeItem[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState("");
   const [loadingFridge, setLoadingFridge] = useState(true);
   const [loadingProducts, setLoadingProducts] = useState(true);
 
-  const fridgeCollection = collection(db, "families", familyId, "fridge");
-  const shoppingCollection = collection(db, "families", familyId, "shopping");
-
   useEffect(() => {
+    if (!familyId) return;
+
+    const fridgeCollection = collection(db, "families", familyId, "fridge");
+
     const unsubscribe = onSnapshot(fridgeCollection, (snapshot) => {
       const items: FridgeItem[] = [];
 
@@ -56,7 +58,7 @@ export default function FridgePage() {
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [familyId]);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, "products"), (snapshot) => {
@@ -98,13 +100,15 @@ export default function FridgePage() {
   }, [products, search]);
 
   async function addToFridge(product: Product) {
+    if (!familyId) return;
+
     const fullName = `${product.icon} ${product.name}`;
 
     const alreadyExists = fridgeItems.some((item) => item.name === fullName);
 
     if (alreadyExists) return;
 
-    await addDoc(fridgeCollection, {
+    await addDoc(collection(db, "families", familyId, "fridge"), {
       name: fullName,
       productId: product.id,
       category: product.category,
@@ -115,7 +119,9 @@ export default function FridgePage() {
   }
 
   async function markAsFinished(item: FridgeItem) {
-    await addDoc(shoppingCollection, {
+    if (!familyId) return;
+
+    await addDoc(collection(db, "families", familyId, "shopping"), {
       name: item.name,
       createdAt: new Date(),
     });
@@ -124,6 +130,8 @@ export default function FridgePage() {
   }
 
   async function removeFromFridge(id: string) {
+    if (!familyId) return;
+
     await deleteDoc(doc(db, "families", familyId, "fridge", id));
   }
 
