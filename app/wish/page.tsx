@@ -74,7 +74,7 @@ export default function WishPage() {
         const image = new Image();
 
         image.onload = () => {
-          const maxSize = 500;
+          const maxSize = 800;
           const canvas = document.createElement("canvas");
           const context = canvas.getContext("2d");
 
@@ -103,7 +103,7 @@ export default function WishPage() {
 
           context.drawImage(image, 0, 0, width, height);
 
-          const compressedImage = canvas.toDataURL("image/jpeg", 0.65);
+          const compressedImage = canvas.toDataURL("image/jpeg", 0.8);
 
           resolve(compressedImage);
         };
@@ -235,7 +235,7 @@ export default function WishPage() {
                   <img
                     src={imageBase64}
                     alt="Выбранное фото"
-                    className="h-40 w-full rounded-2xl object-cover"
+                    className="w-full rounded-2xl"
                   />
 
                   <button
@@ -322,7 +322,7 @@ export default function WishPage() {
                             <img
                               src={imageSource}
                               alt={item.title}
-                              className="mb-3 h-40 w-full rounded-2xl object-cover"
+                              className="mb-3 w-full rounded-2xl"
                             />
                           )}
 
