@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { ChangeEvent, useEffect, useState } from "react";
 import BottomNav from "../../components/BottomNav";
 import { useFamilyAuth } from "../../components/AuthProvider";
 import { db } from "../../lib/firebase";
@@ -18,6 +18,7 @@ type WishItem = {
   price: string;
   link: string;
   imageUrl: string;
+  imageBase64: string;
   section: string;
 };
 
@@ -31,8 +32,10 @@ export default function WishPage() {
   const [price, setPrice] = useState("");
   const [link, setLink] = useState("");
   const [imageUrl, setImageUrl] = useState("");
+  const [imageBase64, setImageBase64] = useState("");
   const [section, setSection] = useState("🏠 Дом");
   const [loading, setLoading] = useState(true);
+  const [imageMessage, setImageMessage] = useState("");
 
   useEffect(() => {
     if (!familyId) return;
@@ -51,6 +54,7 @@ export default function WishPage() {
           price: data.price || "",
           link: data.link || "",
           imageUrl: data.imageUrl || "",
+          imageBase64: data.imageBase64 || "",
           section: data.section || "🏠 Дом",
         });
       });
@@ -62,6 +66,97 @@ export default function WishPage() {
     return () => unsubscribe();
   }, [familyId]);
 
+  async function resizeImage(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+
+      reader.onload = () => {
+        const image = new Image();
+
+        image.onload = () => {
+          const maxSize = 500;
+          const canvas = document.createElement("canvas");
+          const context = canvas.getContext("2d");
+
+          if (!context) {
+            reject(new Error("Не удалось обработать фото."));
+            return;
+          }
+
+          let width = image.width;
+          let height = image.height;
+
+          if (width > height) {
+            if (width > maxSize) {
+              height = Math.round((height * maxSize) / width);
+              width = maxSize;
+            }
+          } else {
+            if (height > maxSize) {
+              width = Math.round((width * maxSize) / height);
+              height = maxSize;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+
+          context.drawImage(image, 0, 0, width, height);
+
+          const compressedImage = canvas.toDataURL("image/jpeg", 0.65);
+
+          resolve(compressedImage);
+        };
+
+        image.onerror = () => {
+          reject(new Error("Не удалось загрузить фото."));
+        };
+
+        image.src = String(reader.result);
+      };
+
+      reader.onerror = () => {
+        reject(new Error("Не удалось прочитать файл."));
+      };
+
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleImageChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+
+    if (!file) return;
+
+    setImageMessage("");
+
+    if (!file.type.startsWith("image/")) {
+      setImageMessage("Выберите файл изображения.");
+      return;
+    }
+
+    if (file.size > 8 * 1024 * 1024) {
+      setImageMessage("Фото слишком большое. Выберите файл до 8 МБ.");
+      return;
+    }
+
+    try {
+      const compressedImage = await resizeImage(file);
+
+      setImageBase64(compressedImage);
+      setImageUrl("");
+      setImageMessage("Фото добавлено.");
+    } catch (error) {
+      console.error(error);
+      setImageMessage("Не удалось обработать фото.");
+    }
+  }
+
+  function removeSelectedImage() {
+    setImageBase64("");
+    setImageMessage("");
+  }
+
   async function addWishItem() {
     if (!familyId) return;
     if (!title.trim()) return;
@@ -71,6 +166,7 @@ export default function WishPage() {
       price: price.trim(),
       link: link.trim(),
       imageUrl: imageUrl.trim(),
+      imageBase64,
       section,
       createdAt: new Date(),
     });
@@ -79,6 +175,8 @@ export default function WishPage() {
     setPrice("");
     setLink("");
     setImageUrl("");
+    setImageBase64("");
+    setImageMessage("");
     setSection("🏠 Дом");
   }
 
@@ -122,11 +220,47 @@ export default function WishPage() {
                 placeholder="Ссылка на товар"
               />
 
+              <label className="flex cursor-pointer items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm font-medium text-slate-700">
+                📷 Выбрать фото из галереи
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleImageChange}
+                  className="hidden"
+                />
+              </label>
+
+              {imageBase64 && (
+                <div className="rounded-2xl bg-slate-50 p-3">
+                  <img
+                    src={imageBase64}
+                    alt="Выбранное фото"
+                    className="h-40 w-full rounded-2xl object-cover"
+                  />
+
+                  <button
+                    onClick={removeSelectedImage}
+                    className="mt-3 w-full rounded-xl bg-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+                  >
+                    Убрать фото
+                  </button>
+                </div>
+              )}
+
+              {imageMessage && (
+                <p className="text-sm text-slate-500">{imageMessage}</p>
+              )}
+
               <input
                 value={imageUrl}
-                onChange={(event) => setImageUrl(event.target.value)}
+                onChange={(event) => {
+                  setImageUrl(event.target.value);
+                  if (event.target.value.trim()) {
+                    setImageBase64("");
+                  }
+                }}
                 className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
-                placeholder="Ссылка на картинку"
+                placeholder="Или ссылка на картинку"
               />
 
               <select
@@ -176,48 +310,52 @@ export default function WishPage() {
                   </p>
                 ) : (
                   <div className="space-y-3">
-                    {sectionItems.map((item) => (
-                      <div
-                        key={item.id}
-                        className="rounded-2xl bg-slate-50 p-3"
-                      >
-                        {item.imageUrl && (
-                          <img
-                            src={item.imageUrl}
-                            alt={item.title}
-                            className="mb-3 h-36 w-full rounded-2xl object-cover"
-                          />
-                        )}
+                    {sectionItems.map((item) => {
+                      const imageSource = item.imageBase64 || item.imageUrl;
 
-                        <div className="font-semibold">{item.title}</div>
-
-                        {item.price && (
-                          <div className="mt-1 text-sm text-slate-500">
-                            {item.price} ₸
-                          </div>
-                        )}
-
-                        <div className="mt-3 flex gap-2">
-                          {item.link && (
-                            <a
-                              href={item.link}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex-1 rounded-xl bg-blue-500 px-3 py-2 text-center text-sm font-medium text-white"
-                            >
-                              Открыть
-                            </a>
+                      return (
+                        <div
+                          key={item.id}
+                          className="rounded-2xl bg-slate-50 p-3"
+                        >
+                          {imageSource && (
+                            <img
+                              src={imageSource}
+                              alt={item.title}
+                              className="mb-3 h-40 w-full rounded-2xl object-cover"
+                            />
                           )}
 
-                          <button
-                            onClick={() => removeWishItem(item.id)}
-                            className="flex-1 rounded-xl bg-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
-                          >
-                            Убрать
-                          </button>
+                          <div className="font-semibold">{item.title}</div>
+
+                          {item.price && (
+                            <div className="mt-1 text-sm text-slate-500">
+                              {item.price} ₸
+                            </div>
+                          )}
+
+                          <div className="mt-3 flex gap-2">
+                            {item.link && (
+                              <a
+                                href={item.link}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex-1 rounded-xl bg-blue-500 px-3 py-2 text-center text-sm font-medium text-white"
+                              >
+                                Открыть
+                              </a>
+                            )}
+
+                            <button
+                              onClick={() => removeWishItem(item.id)}
+                              className="flex-1 rounded-xl bg-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+                            >
+                              Убрать
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
