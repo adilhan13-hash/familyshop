@@ -1,36 +1,39 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# FamilyShop Home Activity v1
 
-## Getting Started
+## Что внутри
 
-First, run the development server:
+- components/BottomNav.tsx
+- app/home/page.tsx
+- lib/activity.ts
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+## Что появится
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+- новая вкладка 🏡 Дом
+- лента последних действий
+- быстрые карточки: покупки, холодильник, AI, желания
+- helper addActivity для будущего логирования
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Важно
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+В этом ZIP создана лента и база для логирования.
+Чтобы реальные действия начали появляться в ленте, нужно следующим шагом добавить вызовы addActivity в страницы:
+- app/shopping/page.tsx
+- app/fridge/page.tsx
+- app/wish/page.tsx
+- app/ai/page.tsx
 
-## Learn More
+Пример:
 
-To learn more about Next.js, take a look at the following resources:
+import { addActivity } from "../../lib/activity";
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+await addActivity({
+  familyId,
+  userId: user.uid,
+  userName: appUser?.displayName || "Пользователь",
+  userPhoto: appUser?.photoBase64 || "",
+  type: "shopping_add",
+  title: "Добавил в покупки",
+  message: "Молоко",
+  emoji: "🛒",
+  itemName: "Молоко",
+});

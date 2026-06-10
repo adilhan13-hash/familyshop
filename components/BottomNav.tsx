@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 type BottomNavProps = {
-  current: "shopping" | "fridge" | "wish" | "ai" | "family";
+  current: "shopping" | "fridge" | "wish" | "ai" | "family" | "home";
 };
 
 export default function BottomNav({ current }: BottomNavProps) {
@@ -10,7 +10,7 @@ export default function BottomNav({ current }: BottomNavProps) {
     { key: "fridge", href: "/fridge", icon: "🥛", label: "Холодильник" },
     { key: "wish", href: "/wish", icon: "⭐", label: "Wish" },
     { key: "ai", href: "/ai", icon: "🤖", label: "AI" },
-    { key: "family", href: "/family", icon: "👨‍👩‍👧", label: "Семья" },
+    { key: "home", href: "/home", icon: "🏡", label: "Дом" },
   ] as const;
 
   return (
