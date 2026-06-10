@@ -61,7 +61,7 @@ function formatTime(createdAt?: { seconds: number }) {
 }
 
 export default function HomePage() {
-  const { familyId, user, appUser } = useFamilyAuth();
+  const { familyId } = useFamilyAuth();
 
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [counts, setCounts] = useState<CountState>({
@@ -173,15 +173,6 @@ export default function HomePage() {
         </header>
 
         <section className="px-5 space-y-5">
-          <div className="rounded-2xl bg-red-50 p-4 text-xs text-red-700">
-            <p className="font-bold">DEBUG USER</p>
-            <p>uid: {user?.uid || "нет"}</p>
-            <p>appUser uid: {appUser?.uid || "нет"}</p>
-            <p>name: {appUser?.displayName || "нет"}</p>
-            <p>phone: {appUser?.phone || "нет"}</p>
-            <p>familyId: {familyId || "нет"}</p>
-          </div>
-
           <div className="grid grid-cols-2 gap-3">
             <Link
               href="/shopping"
