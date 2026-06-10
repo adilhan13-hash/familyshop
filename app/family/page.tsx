@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import BottomNav from "../../components/BottomNav";
+import AvatarPicker from "../../components/AvatarPicker";
 import { useFamilyAuth } from "../../components/AuthProvider";
 import { db } from "../../lib/firebase";
 import {
@@ -27,10 +28,19 @@ type FamilyMemberProfile = {
   id: string;
   phone: string;
   displayName: string;
+  photoBase64: string;
 };
 
+function getInitials(name?: string) {
+  const cleanName = (name || "").trim();
+
+  if (!cleanName) return "👤";
+
+  return cleanName.slice(0, 1).toUpperCase();
+}
+
 export default function FamilyPage() {
-  const { user, appUser, familyId, logout } = useFamilyAuth();
+  const { user, appUser, familyId, logout, refreshAppUser } = useFamilyAuth();
 
   const [family, setFamily] = useState<FamilyData | null>(null);
   const [profiles, setProfiles] = useState<FamilyMemberProfile[]>([]);
@@ -80,6 +90,7 @@ export default function FamilyPage() {
           id: document.id,
           phone: data.phone || "",
           displayName: data.displayName || "",
+          photoBase64: data.photoBase64 || "",
         });
       });
 
@@ -100,6 +111,18 @@ export default function FamilyPage() {
 
     return map;
   }, [profiles]);
+
+  async function saveAvatar(photoBase64: string) {
+    if (!user?.uid) return;
+
+    await updateDoc(doc(db, "users", user.uid), {
+      photoBase64,
+    });
+
+    await refreshAppUser();
+
+    setMessage("Аватар сохранён.");
+  }
 
   function createInviteCode() {
     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -206,9 +229,15 @@ export default function FamilyPage() {
 
         <section className="px-5 space-y-5">
           <div className="rounded-3xl bg-white p-5 shadow-sm">
-            <h2 className="text-lg font-semibold">Мой профиль</h2>
+            <h2 className="mb-4 text-lg font-semibold">Мой профиль</h2>
 
-            <p className="mt-2 text-xl font-semibold">
+            <AvatarPicker
+              currentPhoto={appUser?.photoBase64 || ""}
+              userName={appUser?.displayName || "Пользователь"}
+              onSave={saveAvatar}
+            />
+
+            <p className="mt-4 text-xl font-semibold">
               {appUser?.displayName || "Имя не указано"}
             </p>
 
@@ -254,18 +283,36 @@ export default function FamilyPage() {
                       key={phone}
                       className="flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3"
                     >
-                      <div>
-                        <div className="font-medium">
-                          {profile?.displayName || "Пока не вошёл"}
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full bg-white text-lg font-bold text-slate-500">
+                          {profile?.photoBase64 ? (
+                            <img
+                              src={profile.photoBase64}
+                              alt={profile.displayName || phone}
+                              className="h-full w-full object-cover"
+                            />
+                          ) : (
+                            <span>
+                              {profile?.displayName
+                                ? getInitials(profile.displayName)
+                                : "👤"}
+                            </span>
+                          )}
                         </div>
 
-                        <div className="text-sm text-slate-500">{phone}</div>
-
-                        {phone === family.ownerPhone && (
-                          <div className="text-xs text-green-600">
-                            Владелец
+                        <div>
+                          <div className="font-medium">
+                            {profile?.displayName || "Пока не вошёл"}
                           </div>
-                        )}
+
+                          <div className="text-sm text-slate-500">{phone}</div>
+
+                          {phone === family.ownerPhone && (
+                            <div className="text-xs text-green-600">
+                              Владелец
+                            </div>
+                          )}
+                        </div>
                       </div>
 
                       {isOwner && phone !== family.ownerPhone && (

@@ -32,6 +32,7 @@ type FamilyShopUser = {
   phone: string;
   familyId: string;
   displayName?: string;
+  photoBase64?: string;
 };
 
 type AuthContextType = {
@@ -39,6 +40,7 @@ type AuthContextType = {
   appUser: FamilyShopUser | null;
   familyId: string | null;
   logout: () => Promise<void>;
+  refreshAppUser: () => Promise<void>;
 };
 
 declare global {
@@ -52,6 +54,7 @@ const AuthContext = createContext<AuthContextType>({
   appUser: null,
   familyId: null,
   logout: async () => {},
+  refreshAppUser: async () => {},
 });
 
 export function useFamilyAuth() {
@@ -92,6 +95,13 @@ export default function AuthProvider({ children }: AuthProviderProps) {
     return () => unsubscribe();
   }, []);
 
+  async function refreshAppUser() {
+    if (!user) return;
+
+    const preparedUser = await prepareUser(user);
+    setAppUser(preparedUser);
+  }
+
   async function prepareUser(currentUser: User) {
     const phoneNumber = currentUser.phoneNumber || "";
     const userRef = doc(db, "users", currentUser.uid);
@@ -105,6 +115,7 @@ export default function AuthProvider({ children }: AuthProviderProps) {
         phone: data.phone || phoneNumber,
         familyId: data.familyId,
         displayName: data.displayName || "",
+        photoBase64: data.photoBase64 || "",
       };
     }
 
@@ -124,6 +135,7 @@ export default function AuthProvider({ children }: AuthProviderProps) {
         phone: phoneNumber,
         familyId: oldFamilyId,
         displayName: "",
+        photoBase64: "",
         createdAt: new Date(),
       });
 
@@ -132,6 +144,7 @@ export default function AuthProvider({ children }: AuthProviderProps) {
         phone: phoneNumber,
         familyId: oldFamilyId,
         displayName: "",
+        photoBase64: "",
       };
     }
 
@@ -150,6 +163,7 @@ export default function AuthProvider({ children }: AuthProviderProps) {
       phone: phoneNumber,
       familyId,
       displayName: "",
+      photoBase64: "",
       createdAt: new Date(),
     });
 
@@ -158,6 +172,7 @@ export default function AuthProvider({ children }: AuthProviderProps) {
       phone: phoneNumber,
       familyId,
       displayName: "",
+      photoBase64: "",
     };
   }
 
@@ -316,6 +331,7 @@ export default function AuthProvider({ children }: AuthProviderProps) {
         appUser,
         familyId: appUser.familyId,
         logout,
+        refreshAppUser,
       }}
     >
       {children}
