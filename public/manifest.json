@@ -1,0 +1,10 @@
+{
+  "name": "FamilyShop",
+  "short_name": "FamilyShop",
+  "description": "Семейные покупки, холодильник и AI Cook",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#22c55e",
+  "orientation": "portrait"
+}
