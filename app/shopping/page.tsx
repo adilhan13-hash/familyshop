@@ -11,6 +11,7 @@ import {
   doc,
   onSnapshot,
 } from "firebase/firestore";
+import { addActivity } from "../../lib/activity";
 
 type ShoppingItem = {
   id: string;
@@ -166,6 +167,17 @@ export default function ShoppingPage() {
       createdAt: new Date(),
     });
 
+    await addActivity({
+      familyId,
+      userId: "temp",
+      userName: "Адильхан",
+      type: "shopping_add",
+      title: "Добавил в покупки",
+      message: fullName,
+      emoji: "🛒",
+      itemName: fullName,
+    });
+
     setSearch("");
   }
 
@@ -190,6 +202,17 @@ export default function ShoppingPage() {
     }
 
     await deleteDoc(doc(db, "families", familyId, "shopping", item.id));
+
+    await addActivity({
+      familyId,
+      userId: "temp",
+      userName: "Адильхан",
+      type: "shopping_buy",
+      title: "Купил товар",
+      message: item.name,
+      emoji: "✅",
+      itemName: item.name,
+    });
   }
 
   function ProductGrid({ items }: { items: Product[] }) {
