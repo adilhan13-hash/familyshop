@@ -1,10 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import BottomNav from "../../components/BottomNav";
 import { useFamilyAuth } from "../../components/AuthProvider";
 import { db } from "../../lib/firebase";
 import { addDoc, collection, onSnapshot } from "firebase/firestore";
+import { addActivity } from "../../lib/activity";
 import { Recipe, recipes } from "./recipes";
 
 type FridgeItem = {
@@ -74,7 +76,7 @@ function loadActiveRecipeIds() {
 }
 
 export default function AiCookPage() {
-  const { familyId } = useFamilyAuth();
+  const { familyId, appUser } = useFamilyAuth();
 
   const [fridgeItems, setFridgeItems] = useState<FridgeItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -179,9 +181,11 @@ export default function AiCookPage() {
       .filter((result) => result.requiredHave > 0)
       .sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score;
+
         if (a.missingRequired.length !== b.missingRequired.length) {
           return a.missingRequired.length - b.missingRequired.length;
         }
+
         return a.recipe.title.localeCompare(b.recipe.title, "ru");
       });
   }, [fridgeNames]);
@@ -197,9 +201,7 @@ export default function AiCookPage() {
   const filteredResults = useMemo(() => {
     const query = search.trim().toLowerCase();
 
-    if (!query) {
-      return matchResults;
-    }
+    if (!query) return matchResults;
 
     return matchResults.filter((result) => {
       const titleMatch = result.recipe.title.toLowerCase().includes(query);
@@ -213,7 +215,9 @@ export default function AiCookPage() {
   }, [matchResults, search]);
 
   const readyResults = useMemo(() => {
-    return filteredResults.filter((result) => result.missingRequired.length === 0);
+    return filteredResults.filter(
+      (result) => result.missingRequired.length === 0
+    );
   }, [filteredResults]);
 
   const almostResults = useMemo(() => {
@@ -226,8 +230,15 @@ export default function AiCookPage() {
     return filteredResults.filter((result) => result.score < 70);
   }, [filteredResults]);
 
-  const groupedAlmost = useMemo(() => groupByCategory(almostResults), [almostResults]);
-  const groupedOther = useMemo(() => groupByCategory(otherResults), [otherResults]);
+  const groupedAlmost = useMemo(
+    () => groupByCategory(almostResults),
+    [almostResults]
+  );
+
+  const groupedOther = useMemo(
+    () => groupByCategory(otherResults),
+    [otherResults]
+  );
 
   function toggleCategory(category: string) {
     setOpenCategories((current) => ({
@@ -236,7 +247,9 @@ export default function AiCookPage() {
     }));
   }
 
-  function addActiveRecipe(recipeId: string) {
+  async function addActiveRecipe(recipeId: string) {
+    const recipe = recipes.find((item) => item.id === recipeId);
+
     setActiveRecipeIds((current) => {
       if (current.includes(recipeId)) {
         return current;
@@ -249,10 +262,25 @@ export default function AiCookPage() {
       return updated;
     });
 
+    if (familyId && recipe) {
+      await addActivity({
+        familyId,
+        userId: appUser?.uid || "unknown",
+        userName: appUser?.displayName || "Без имени",
+        type: "ai_recipe_active",
+        title: "Добавил блюдо в готовку",
+        message: recipe.title,
+        emoji: "👨‍🍳",
+        itemName: recipe.title,
+      });
+    }
+
     setMessage("Блюдо добавлено в «Готовлю сейчас».");
   }
 
-  function removeActiveRecipe(recipeId: string) {
+  async function removeActiveRecipe(recipeId: string) {
+    const recipe = recipes.find((item) => item.id === recipeId);
+
     setActiveRecipeIds((current) => {
       const updated = current.filter((id) => id !== recipeId);
 
@@ -260,12 +288,38 @@ export default function AiCookPage() {
 
       return updated;
     });
+
+    if (familyId && recipe) {
+      await addActivity({
+        familyId,
+        userId: appUser?.uid || "unknown",
+        userName: appUser?.displayName || "Без имени",
+        type: "ai_recipe_remove",
+        title: "Убрал блюдо из готовки",
+        message: recipe.title,
+        emoji: "🗑️",
+        itemName: recipe.title,
+      });
+    }
   }
 
-  function clearActiveRecipes() {
+  async function clearActiveRecipes() {
     setActiveRecipeIds([]);
     setMessage("");
     saveActiveRecipeIds([]);
+
+    if (familyId) {
+      await addActivity({
+        familyId,
+        userId: appUser?.uid || "unknown",
+        userName: appUser?.displayName || "Без имени",
+        type: "ai_recipes_clear",
+        title: "Очистил готовку",
+        message: "Очистил список «Готовлю сейчас»",
+        emoji: "🧹",
+        itemName: "Готовлю сейчас",
+      });
+    }
   }
 
   function openRecipe(result: MatchResult) {
@@ -286,9 +340,31 @@ export default function AiCookPage() {
         source: "AI Cook",
         recipeId: result.recipe.id,
       });
+
+      await addActivity({
+        familyId,
+        userId: appUser?.uid || "unknown",
+        userName: appUser?.displayName || "Без имени",
+        type: "ai_add_to_shopping",
+        title: "AI добавил ингредиент",
+        message: `${ingredientName} для блюда ${result.recipe.title}`,
+        emoji: "🤖",
+        itemName: ingredientName,
+      });
     }
 
-    addActiveRecipe(result.recipe.id);
+    await addActivity({
+      familyId,
+      userId: appUser?.uid || "unknown",
+      userName: appUser?.displayName || "Без имени",
+      type: "ai_recipe_selected",
+      title: "Выбрал рецепт",
+      message: result.recipe.title,
+      emoji: "🍳",
+      itemName: result.recipe.title,
+    });
+
+    await addActiveRecipe(result.recipe.id);
     setMessage(`${label} для "${result.recipe.title}" добавлены в покупки.`);
   }
 
@@ -304,10 +380,18 @@ export default function AiCookPage() {
     const isActive = activeRecipeIds.includes(result.recipe.id);
 
     return (
-      <div className="rounded-3xl bg-slate-50 p-4">
-        <button
+      <motion.div
+        layout
+        initial={{ opacity: 0, y: 15, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: -15, scale: 0.98 }}
+        transition={{ duration: 0.2 }}
+        className="rounded-3xl bg-slate-50 p-4"
+      >
+        <motion.button
+          whileTap={{ scale: 0.98 }}
           onClick={() => openRecipe(result)}
-          className="w-full text-left transition active:scale-[0.99]"
+          className="w-full text-left"
         >
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -340,7 +424,10 @@ export default function AiCookPage() {
           {!compact && (
             <>
               <div className="mt-3 h-2 rounded-full bg-slate-200">
-                <div
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${result.score}%` }}
+                  transition={{ duration: 0.45 }}
                   className={`h-2 rounded-full ${
                     result.score === 100
                       ? "bg-green-500"
@@ -348,7 +435,6 @@ export default function AiCookPage() {
                       ? "bg-green-400"
                       : "bg-orange-400"
                   }`}
-                  style={{ width: `${result.score}%` }}
                 />
               </div>
 
@@ -371,37 +457,43 @@ export default function AiCookPage() {
               )}
             </>
           )}
-        </button>
+        </motion.button>
 
         <div className="mt-3 flex gap-2">
           {!isActive && (
-            <button
+            <motion.button
+              whileTap={{ scale: 0.95 }}
+              whileHover={{ scale: 1.02 }}
               onClick={() => addActiveRecipe(result.recipe.id)}
               className="flex-1 rounded-2xl bg-green-500 px-3 py-2 text-sm font-medium text-white"
             >
               👨‍🍳 Готовлю
-            </button>
+            </motion.button>
           )}
 
           {isActive && !showRemove && (
-            <button
+            <motion.button
+              whileTap={{ scale: 0.95 }}
+              whileHover={{ scale: 1.02 }}
               onClick={() => removeActiveRecipe(result.recipe.id)}
               className="flex-1 rounded-2xl bg-green-100 px-3 py-2 text-sm font-medium text-green-700"
             >
               ✅ Уже готовлю
-            </button>
+            </motion.button>
           )}
 
           {showRemove && (
-            <button
+            <motion.button
+              whileTap={{ scale: 0.95 }}
+              whileHover={{ scale: 1.02 }}
               onClick={() => removeActiveRecipe(result.recipe.id)}
               className="flex-1 rounded-2xl bg-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
             >
               Убрать
-            </button>
+            </motion.button>
           )}
         </div>
-      </div>
+      </motion.div>
     );
   }
 
@@ -418,8 +510,15 @@ export default function AiCookPage() {
     const visibleItems = isOpen ? items : [];
 
     return (
-      <div className="rounded-3xl bg-white p-5 shadow-sm">
-        <button
+      <motion.div
+        layout
+        initial={{ opacity: 0, y: 14 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.22 }}
+        className="rounded-3xl bg-white p-5 shadow-sm"
+      >
+        <motion.button
+          whileTap={{ scale: 0.98 }}
           onClick={() => toggleCategory(title)}
           className="flex w-full items-center justify-between text-left"
         >
@@ -441,24 +540,38 @@ export default function AiCookPage() {
               {items.length}
             </span>
 
-            <span className="text-xl text-slate-400">
-              {isOpen ? "⌃" : "⌄"}
-            </span>
+            <motion.span
+              animate={{ rotate: isOpen ? 180 : 0 }}
+              transition={{ duration: 0.2 }}
+              className="text-xl text-slate-400"
+            >
+              ⌄
+            </motion.span>
           </div>
-        </button>
+        </motion.button>
 
-        {isOpen && (
-          <div className="mt-4 space-y-3">
-            {visibleItems.map((result) => (
-              <RecipeCard
-                key={result.recipe.id}
-                result={result}
-                compact={color === "slate"}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+        <AnimatePresence>
+          {isOpen && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.2 }}
+              className="overflow-hidden"
+            >
+              <div className="mt-4 space-y-3">
+                {visibleItems.map((result) => (
+                  <RecipeCard
+                    key={result.recipe.id}
+                    result={result}
+                    compact={color === "slate"}
+                  />
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
     );
   }
 
@@ -469,22 +582,33 @@ export default function AiCookPage() {
     return (
       <main className="min-h-screen bg-slate-100 text-slate-900">
         <div className="mx-auto min-h-screen max-w-md bg-slate-50 pb-24">
-          <header className="px-5 pt-8 pb-4">
-            <button
+          <motion.header
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25 }}
+            className="px-5 pt-8 pb-4"
+          >
+            <motion.button
+              whileTap={{ scale: 0.95 }}
               onClick={() => setSelectedRecipe(null)}
               className="mb-4 rounded-full bg-white px-4 py-2 text-sm text-slate-600 shadow-sm"
             >
               ← Назад
-            </button>
+            </motion.button>
 
             <p className="text-sm text-slate-500">AI Cook</p>
             <h1 className="text-3xl font-bold">
               {recipe.emoji} {recipe.title}
             </h1>
-          </header>
+          </motion.header>
 
           <section className="px-5 space-y-5">
-            <div className="rounded-3xl bg-white p-5 shadow-sm">
+            <motion.div
+              initial={{ opacity: 0, y: 14 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.25 }}
+              className="rounded-3xl bg-white p-5 shadow-sm"
+            >
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-slate-500">Готовность</p>
@@ -502,34 +626,44 @@ export default function AiCookPage() {
               </div>
 
               {!isActive ? (
-                <button
+                <motion.button
+                  whileTap={{ scale: 0.96 }}
                   onClick={() => addActiveRecipe(recipe.id)}
                   className="mt-4 w-full rounded-2xl bg-green-500 px-4 py-3 font-medium text-white"
                 >
                   👨‍🍳 Добавить в «Готовлю сейчас»
-                </button>
+                </motion.button>
               ) : (
-                <button
+                <motion.button
+                  whileTap={{ scale: 0.96 }}
                   onClick={() => removeActiveRecipe(recipe.id)}
                   className="mt-4 w-full rounded-2xl bg-slate-200 px-4 py-3 font-medium text-slate-700"
                 >
                   Убрать из «Готовлю сейчас»
-                </button>
+                </motion.button>
               )}
-            </div>
+            </motion.div>
 
-            <div className="rounded-3xl bg-white p-5 shadow-sm">
+            <motion.div
+              initial={{ opacity: 0, y: 14 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.25, delay: 0.05 }}
+              className="rounded-3xl bg-white p-5 shadow-sm"
+            >
               <h2 className="mb-3 text-lg font-semibold">Ингредиенты</h2>
 
               <div className="space-y-2">
-                {recipe.ingredients.map((ingredient) => {
+                {recipe.ingredients.map((ingredient, index) => {
                   const exists = fridgeNames.includes(
                     normalizeProductName(ingredient.name)
                   );
 
                   return (
-                    <div
+                    <motion.div
                       key={ingredient.name}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ duration: 0.18, delay: index * 0.02 }}
                       className="flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3"
                     >
                       <span>{ingredient.name}</span>
@@ -542,15 +676,20 @@ export default function AiCookPage() {
                             : "font-medium text-red-500"
                         }
                       >
-                        {exists ? "Есть" : ingredient.optional ? "Желательно" : "Нет"}
+                        {exists
+                          ? "Есть"
+                          : ingredient.optional
+                          ? "Желательно"
+                          : "Нет"}
                       </span>
-                    </div>
+                    </motion.div>
                   );
                 })}
               </div>
 
               {selectedRecipe.missingRequired.length > 0 && (
-                <button
+                <motion.button
+                  whileTap={{ scale: 0.96 }}
                   onClick={() =>
                     addIngredientsToShopping(
                       selectedRecipe,
@@ -561,11 +700,12 @@ export default function AiCookPage() {
                   className="mt-4 w-full rounded-2xl bg-green-500 px-4 py-3 font-medium text-white"
                 >
                   🛒 Добавить обязательное в покупки
-                </button>
+                </motion.button>
               )}
 
               {selectedRecipe.missingOptional.length > 0 && (
-                <button
+                <motion.button
+                  whileTap={{ scale: 0.96 }}
                   onClick={() =>
                     addIngredientsToShopping(
                       selectedRecipe,
@@ -576,27 +716,35 @@ export default function AiCookPage() {
                   className="mt-3 w-full rounded-2xl bg-orange-100 px-4 py-3 font-medium text-orange-700"
                 >
                   ➕ Добавить желательное в покупки
-                </button>
+                </motion.button>
               )}
-            </div>
+            </motion.div>
 
-            <div className="rounded-3xl bg-white p-5 shadow-sm">
+            <motion.div
+              initial={{ opacity: 0, y: 14 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.25, delay: 0.1 }}
+              className="rounded-3xl bg-white p-5 shadow-sm"
+            >
               <h2 className="mb-3 text-lg font-semibold">Приготовление</h2>
 
               <div className="space-y-3">
                 {recipe.steps.map((step, index) => (
-                  <div
+                  <motion.div
                     key={`${step}-${index}`}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ duration: 0.18, delay: index * 0.03 }}
                     className="rounded-2xl bg-slate-50 px-4 py-3"
                   >
                     <p className="text-sm font-semibold text-slate-500">
                       Шаг {index + 1}
                     </p>
                     <p className="mt-1 leading-relaxed">{step}</p>
-                  </div>
+                  </motion.div>
                 ))}
               </div>
-            </div>
+            </motion.div>
           </section>
 
           <BottomNav current="ai" />
@@ -608,14 +756,25 @@ export default function AiCookPage() {
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
       <div className="mx-auto min-h-screen max-w-md bg-slate-50 pb-24">
-        <header className="px-5 pt-8 pb-4">
+        <motion.header
+          initial={{ opacity: 0, y: -12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.25 }}
+          className="px-5 pt-8 pb-4"
+        >
           <p className="text-sm text-slate-500">FamilyShop</p>
           <h1 className="text-3xl font-bold">AI Cook 🤖</h1>
-        </header>
+        </motion.header>
 
         <section className="px-5 space-y-5">
-          <div className="rounded-3xl bg-white p-5 shadow-sm">
-            <button
+          <motion.div
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25 }}
+            className="rounded-3xl bg-white p-5 shadow-sm"
+          >
+            <motion.button
+              whileTap={{ scale: 0.98 }}
               onClick={() => setIsFridgeOpen(!isFridgeOpen)}
               className="flex w-full items-center justify-between text-left"
             >
@@ -630,75 +789,120 @@ export default function AiCookPage() {
                 <span className="rounded-full bg-blue-100 px-3 py-1 text-sm text-blue-700">
                   {fridgeItems.length}
                 </span>
-                <span className="text-xl text-slate-400">
-                  {isFridgeOpen ? "⌃" : "⌄"}
-                </span>
-              </div>
-            </button>
 
-            {isFridgeOpen && (
-              <div className="mt-4">
-                {loading ? (
-                  <p className="text-sm text-slate-500">Загрузка...</p>
-                ) : fridgeItems.length === 0 ? (
-                  <p className="text-sm text-slate-500">
-                    Добавь продукты в холодильник, и я подберу блюда.
-                  </p>
-                ) : (
-                  <div className="space-y-2">
-                    {fridgeItems.map((item) => (
-                      <div
-                        key={item.id}
-                        className="rounded-2xl bg-slate-50 px-4 py-3 text-sm font-medium"
-                      >
-                        {getCleanName(item.name)}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {activeRecipes.length > 0 && (
-            <div className="rounded-3xl bg-white p-5 shadow-sm">
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-lg font-semibold">👨‍🍳 Готовлю сейчас</h2>
-
-                <button
-                  onClick={clearActiveRecipes}
-                  className="text-sm text-slate-400"
+                <motion.span
+                  animate={{ rotate: isFridgeOpen ? 180 : 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="text-xl text-slate-400"
                 >
-                  Очистить
-                </button>
+                  ⌄
+                </motion.span>
               </div>
+            </motion.button>
 
-              <div className="space-y-3">
-                {activeRecipes.map((result) => (
-                  <RecipeCard
-                    key={result.recipe.id}
-                    result={result}
-                    showRemove
-                  />
-                ))}
-              </div>
-            </div>
-          )}
+            <AnimatePresence>
+              {isFridgeOpen && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="overflow-hidden"
+                >
+                  <div className="mt-4">
+                    {loading ? (
+                      <p className="text-sm text-slate-500">Загрузка...</p>
+                    ) : fridgeItems.length === 0 ? (
+                      <p className="text-sm text-slate-500">
+                        Добавь продукты в холодильник, и я подберу блюда.
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {fridgeItems.map((item, index) => (
+                          <motion.div
+                            key={item.id}
+                            initial={{ opacity: 0, y: 8 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.15, delay: index * 0.02 }}
+                            className="rounded-2xl bg-slate-50 px-4 py-3 text-sm font-medium"
+                          >
+                            {getCleanName(item.name)}
+                          </motion.div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </motion.div>
 
-          {message && (
-            <div className="rounded-2xl bg-green-50 p-4 text-sm text-green-700">
-              {message}
-            </div>
-          )}
+          <AnimatePresence mode="popLayout">
+            {activeRecipes.length > 0 && (
+              <motion.div
+                key="active-recipes"
+                layout
+                initial={{ opacity: 0, y: 14, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -14, scale: 0.98 }}
+                transition={{ duration: 0.22 }}
+                className="rounded-3xl bg-white p-5 shadow-sm"
+              >
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-lg font-semibold">👨‍🍳 Готовлю сейчас</h2>
 
-          <input
+                  <motion.button
+                    whileTap={{ scale: 0.95 }}
+                    onClick={clearActiveRecipes}
+                    className="text-sm text-slate-400"
+                  >
+                    Очистить
+                  </motion.button>
+                </div>
+
+                <div className="space-y-3">
+                  {activeRecipes.map((result) => (
+                    <RecipeCard
+                      key={result.recipe.id}
+                      result={result}
+                      showRemove
+                    />
+                  ))}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <AnimatePresence>
+            {message && (
+              <motion.div
+                initial={{ opacity: 0, y: -12, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -12, scale: 0.98 }}
+                transition={{ duration: 0.2 }}
+                className="rounded-2xl bg-green-50 p-4 text-sm text-green-700"
+              >
+                {message}
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <motion.input
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25, delay: 0.05 }}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
             placeholder="🔍 Найти рецепт или ингредиент"
           />
 
-          <div className="rounded-3xl bg-white p-5 shadow-sm">
+          <motion.div
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25, delay: 0.08 }}
+            className="rounded-3xl bg-white p-5 shadow-sm"
+          >
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-lg font-semibold">✅ Готово сейчас</h2>
 
@@ -718,7 +922,7 @@ export default function AiCookPage() {
                 ))}
               </div>
             )}
-          </div>
+          </motion.div>
 
           {Object.entries(groupedAlmost).map(([category, items]) => (
             <CategorySection
