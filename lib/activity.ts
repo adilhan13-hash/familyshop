@@ -1,52 +1,32 @@
 import { addDoc, collection } from "firebase/firestore";
 import { db } from "./firebase";
 
-type ActivityInput = {
+export type ActivityInput = {
   familyId: string;
   userId: string;
   userName: string;
   userPhoto?: string;
-  type:
-    | "shopping_add"
-    | "shopping_buy"
-    | "shopping_delete"
-    | "fridge_add"
-    | "fridge_delete"
-    | "wish_add"
-    | "wish_delete"
-    | "ai_start_cooking"
-    | "ai_finish_cooking"
-    | "family_join"
-    | "family_invite";
+  type: string;
   title: string;
   message: string;
   emoji?: string;
   itemName?: string;
 };
 
-export async function addActivity({
-  familyId,
-  userId,
-  userName,
-  userPhoto = "",
-  type,
-  title,
-  message,
-  emoji = "🏡",
-  itemName = "",
-}: ActivityInput) {
-  if (!familyId || !userId) return;
+export async function addActivity(data: ActivityInput) {
+  console.log("ACTIVITY START", data);
 
-  await addDoc(collection(db, "families", familyId, "activity"), {
-    familyId,
-    userId,
-    userName: userName || "Пользователь",
-    userPhoto,
-    type,
-    title,
-    message,
-    emoji,
-    itemName,
-    createdAt: new Date(),
-  });
+  try {
+    const result = await addDoc(
+      collection(db, "families", data.familyId, "activity"),
+      {
+        ...data,
+        createdAt: new Date(),
+      }
+    );
+
+    console.log("ACTIVITY OK", result.id);
+  } catch (error) {
+    console.error("ACTIVITY ERROR", error);
+  }
 }
