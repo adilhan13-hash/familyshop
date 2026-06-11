@@ -1,97 +1,82 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import BottomNav from "../../components/BottomNav";
 import { useFamilyAuth } from "../../components/AuthProvider";
 import { db } from "../../lib/firebase";
-import { addDoc, collection, onSnapshot } from "firebase/firestore";
+import {
+  addDoc,
+  collection,
+  endAt,
+  getDocs,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  startAt,
+  where,
+} from "firebase/firestore";
 import { addActivity } from "../../lib/activity";
-import { Recipe, recipes } from "./recipes";
 
 type FridgeItem = {
   id: string;
   name: string;
+  productId?: string;
+  ingredientId?: string;
+};
+
+type Recipe = {
+  id: string;
+  title: string;
+  category?: string;
+  cuisine?: string;
+  difficulty?: string;
+  cookingTime?: number;
+  cookingTimeText?: string;
+  description?: string;
+  ingredientIds?: string[];
+  optionalIngredientIds?: string[];
+  ingredientNames?: Record<string, string>;
+  ingredients?: string[];
+  steps?: string[];
+  searchTitle?: string;
+  searchText?: string;
+  aiCandidate?: boolean;
 };
 
 type MatchResult = {
   recipe: Recipe;
   score: number;
-  requiredTotal: number;
-  requiredHave: number;
-  optionalTotal: number;
-  optionalHave: number;
-  missingRequired: string[];
-  missingOptional: string[];
+  haveIds: string[];
+  missingIds: string[];
+  total: number;
 };
 
-const ACTIVE_RECIPES_KEY = "familyshop_active_recipe_ids";
-
-function normalizeProductName(value: string) {
+function normalizeText(value: string) {
   return value
-    .replace(/^[^\p{L}\p{N}]+/u, "")
-    .trim()
-    .toLowerCase();
-}
-
-function getCleanName(value: string) {
-  return value.replace(/^[^\p{L}\p{N}]+/u, "").trim();
-}
-
-function groupByCategory(items: MatchResult[]) {
-  return items.reduce<Record<string, MatchResult[]>>((acc, item) => {
-    const category = item.recipe.category;
-
-    if (!acc[category]) {
-      acc[category] = [];
-    }
-
-    acc[category].push(item);
-    return acc;
-  }, {});
-}
-
-function saveActiveRecipeIds(ids: string[]) {
-  if (typeof window === "undefined") return;
-
-  window.localStorage.setItem(ACTIVE_RECIPES_KEY, JSON.stringify(ids));
-}
-
-function loadActiveRecipeIds() {
-  if (typeof window === "undefined") return [];
-
-  try {
-    const value = window.localStorage.getItem(ACTIVE_RECIPES_KEY);
-
-    if (!value) return [];
-
-    const parsed = JSON.parse(value);
-
-    if (!Array.isArray(parsed)) return [];
-
-    return parsed.filter((item) => typeof item === "string");
-  } catch {
-    return [];
-  }
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export default function AiCookPage() {
   const { familyId, appUser } = useFamilyAuth();
 
   const [fridgeItems, setFridgeItems] = useState<FridgeItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [suggestedRecipes, setSuggestedRecipes] = useState<Recipe[]>([]);
+  const [searchRecipes, setSearchRecipes] = useState<Recipe[]>([]);
   const [selectedRecipe, setSelectedRecipe] = useState<MatchResult | null>(null);
-  const [activeRecipeIds, setActiveRecipeIds] = useState<string[]>([]);
   const [search, setSearch] = useState("");
   const [isFridgeOpen, setIsFridgeOpen] = useState(false);
-  const [openCategories, setOpenCategories] = useState<Record<string, boolean>>(
-    {}
-  );
+  const [loadingFridge, setLoadingFridge] = useState(true);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(true);
+  const [loadingSearch, setLoadingSearch] = useState(false);
   const [message, setMessage] = useState("");
-
-  useEffect(() => {
-    setActiveRecipeIds(loadActiveRecipeIds());
-  }, []);
 
   useEffect(() => {
     if (!familyId) return;
@@ -108,235 +93,199 @@ export default function AiCookPage() {
             items.push({
               id: document.id,
               name: data.name,
+              productId: data.productId,
+              ingredientId: data.ingredientId,
             });
           }
         });
 
         setFridgeItems(items);
-        setLoading(false);
+        setLoadingFridge(false);
       }
     );
 
     return () => unsubscribe();
   }, [familyId]);
 
-  const fridgeNames = useMemo(() => {
-    return fridgeItems.map((item) => normalizeProductName(item.name));
+  useEffect(() => {
+    async function loadCandidateRecipes() {
+      try {
+        setLoadingSuggestions(true);
+
+        const recipesQuery = query(
+          collection(db, "recipes"),
+          where("aiCandidate", "==", true),
+          limit(50)
+        );
+
+        const snapshot = await getDocs(recipesQuery);
+
+        const items: Recipe[] = snapshot.docs.map((document) => ({
+          id: document.id,
+          ...(document.data() as Omit<Recipe, "id">),
+        }));
+
+        setSuggestedRecipes(items);
+      } catch (error) {
+        console.error("AI CANDIDATE RECIPES LOAD ERROR", error);
+      } finally {
+        setLoadingSuggestions(false);
+      }
+    }
+
+    loadCandidateRecipes();
+  }, []);
+
+  useEffect(() => {
+    const text = normalizeText(search);
+
+    setSearchRecipes([]);
+
+    if (text.length < 2) {
+      setLoadingSearch(false);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        setLoadingSearch(true);
+
+        const recipesQuery = query(
+          collection(db, "recipes"),
+          orderBy("searchTitle"),
+          startAt(text),
+          endAt(text + "\uf8ff"),
+          limit(20)
+        );
+
+        const snapshot = await getDocs(recipesQuery);
+
+        const items: Recipe[] = snapshot.docs.map((document) => ({
+          id: document.id,
+          ...(document.data() as Omit<Recipe, "id">),
+        }));
+
+        setSearchRecipes(items);
+      } catch (error) {
+        console.error("AI SEARCH RECIPES ERROR", error);
+      } finally {
+        setLoadingSearch(false);
+      }
+    }, 450);
+
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const fridgeIngredientIds = useMemo(() => {
+    const ids = fridgeItems
+      .map((item) => item.ingredientId)
+      .filter(Boolean) as string[];
+
+    return Array.from(new Set(ids));
   }, [fridgeItems]);
 
-  const matchResults = useMemo<MatchResult[]>(() => {
-    return recipes
-      .map((recipe) => {
-        const requiredIngredients = recipe.ingredients.filter(
-          (ingredient) => !ingredient.optional
-        );
+  const fridgeNames = useMemo(() => {
+    return fridgeItems.map((item) => normalizeText(item.name));
+  }, [fridgeItems]);
 
-        const optionalIngredients = recipe.ingredients.filter(
-          (ingredient) => ingredient.optional
-        );
+  function getRecipeIngredientIds(recipe: Recipe) {
+    if (recipe.ingredientIds && recipe.ingredientIds.length > 0) {
+      return Array.from(new Set(recipe.ingredientIds));
+    }
 
-        const missingRequired = requiredIngredients
-          .filter(
-            (ingredient) =>
-              !fridgeNames.includes(normalizeProductName(ingredient.name))
-          )
-          .map((ingredient) => ingredient.name);
+    if (recipe.ingredients && recipe.ingredients.length > 0) {
+      return recipe.ingredients.map((name) => normalizeText(name));
+    }
 
-        const missingOptional = optionalIngredients
-          .filter(
-            (ingredient) =>
-              !fridgeNames.includes(normalizeProductName(ingredient.name))
-          )
-          .map((ingredient) => ingredient.name);
+    return [];
+  }
 
-        const requiredHave =
-          requiredIngredients.length - missingRequired.length;
+  function getIngredientLabel(recipe: Recipe, id: string) {
+    if (recipe.ingredientNames?.[id]) {
+      return recipe.ingredientNames[id];
+    }
 
-        const optionalHave =
-          optionalIngredients.length - missingOptional.length;
-
-        const requiredScore =
-          requiredIngredients.length === 0
-            ? 100
-            : Math.round((requiredHave / requiredIngredients.length) * 100);
-
-        const optionalBonus =
-          optionalIngredients.length === 0
-            ? 0
-            : Math.round((optionalHave / optionalIngredients.length) * 8);
-
-        const score = Math.min(100, requiredScore + optionalBonus);
-
-        return {
-          recipe,
-          score,
-          requiredTotal: requiredIngredients.length,
-          requiredHave,
-          optionalTotal: optionalIngredients.length,
-          optionalHave,
-          missingRequired,
-          missingOptional,
-        };
-      })
-      .filter((result) => result.requiredHave > 0)
-      .sort((a, b) => {
-        if (b.score !== a.score) return b.score - a.score;
-
-        if (a.missingRequired.length !== b.missingRequired.length) {
-          return a.missingRequired.length - b.missingRequired.length;
-        }
-
-        return a.recipe.title.localeCompare(b.recipe.title, "ru");
-      });
-  }, [fridgeNames]);
-
-  const activeRecipes = useMemo(() => {
-    return activeRecipeIds
-      .map((recipeId) =>
-        matchResults.find((result) => result.recipe.id === recipeId)
-      )
-      .filter((result): result is MatchResult => Boolean(result));
-  }, [activeRecipeIds, matchResults]);
-
-  const filteredResults = useMemo(() => {
-    const query = search.trim().toLowerCase();
-
-    if (!query) return matchResults;
-
-    return matchResults.filter((result) => {
-      const titleMatch = result.recipe.title.toLowerCase().includes(query);
-      const categoryMatch = result.recipe.category.toLowerCase().includes(query);
-      const ingredientMatch = result.recipe.ingredients.some((ingredient) =>
-        ingredient.name.toLowerCase().includes(query)
+    if (recipe.ingredients?.length) {
+      const found = recipe.ingredients.find(
+        (name) => normalizeText(name) === normalizeText(id)
       );
 
-      return titleMatch || categoryMatch || ingredientMatch;
-    });
-  }, [matchResults, search]);
-
-  const readyResults = useMemo(() => {
-    return filteredResults.filter(
-      (result) => result.missingRequired.length === 0
-    );
-  }, [filteredResults]);
-
-  const almostResults = useMemo(() => {
-    return filteredResults.filter(
-      (result) => result.missingRequired.length > 0 && result.score >= 70
-    );
-  }, [filteredResults]);
-
-  const otherResults = useMemo(() => {
-    return filteredResults.filter((result) => result.score < 70);
-  }, [filteredResults]);
-
-  const groupedAlmost = useMemo(
-    () => groupByCategory(almostResults),
-    [almostResults]
-  );
-
-  const groupedOther = useMemo(
-    () => groupByCategory(otherResults),
-    [otherResults]
-  );
-
-  function toggleCategory(category: string) {
-    setOpenCategories((current) => ({
-      ...current,
-      [category]: !current[category],
-    }));
-  }
-
-  async function addActiveRecipe(recipeId: string) {
-    const recipe = recipes.find((item) => item.id === recipeId);
-
-    setActiveRecipeIds((current) => {
-      if (current.includes(recipeId)) {
-        return current;
-      }
-
-      const updated = [recipeId, ...current];
-
-      saveActiveRecipeIds(updated);
-
-      return updated;
-    });
-
-    if (familyId && recipe) {
-      await addActivity({
-        familyId,
-        userId: appUser?.uid || "unknown",
-        userName: appUser?.displayName || "Без имени",
-        type: "ai_recipe_active",
-        title: "Добавил блюдо в готовку",
-        message: recipe.title,
-        emoji: "👨‍🍳",
-        itemName: recipe.title,
-      });
+      if (found) return found;
     }
 
-    setMessage("Блюдо добавлено в «Готовлю сейчас».");
+    return id;
   }
 
-  async function removeActiveRecipe(recipeId: string) {
-    const recipe = recipes.find((item) => item.id === recipeId);
+  function buildMatch(recipe: Recipe): MatchResult {
+    const allIds = getRecipeIngredientIds(recipe);
+    const optionalIds = new Set(recipe.optionalIngredientIds || []);
 
-    setActiveRecipeIds((current) => {
-      const updated = current.filter((id) => id !== recipeId);
+    const requiredIds = allIds.filter((id) => !optionalIds.has(id));
+    const idsForScore = requiredIds.length > 0 ? requiredIds : allIds;
 
-      saveActiveRecipeIds(updated);
+    const fridgeIdSet = new Set(fridgeIngredientIds);
 
-      return updated;
+    const haveIds = idsForScore.filter((id) => {
+      if (fridgeIdSet.has(id)) return true;
+
+      const label = normalizeText(getIngredientLabel(recipe, id));
+
+      return fridgeNames.some(
+        (fridgeName) => fridgeName.includes(label) || label.includes(fridgeName)
+      );
     });
 
-    if (familyId && recipe) {
-      await addActivity({
-        familyId,
-        userId: appUser?.uid || "unknown",
-        userName: appUser?.displayName || "Без имени",
-        type: "ai_recipe_remove",
-        title: "Убрал блюдо из готовки",
-        message: recipe.title,
-        emoji: "🗑️",
-        itemName: recipe.title,
+    const missingIds = idsForScore.filter((id) => !haveIds.includes(id));
+
+    const score =
+      idsForScore.length === 0
+        ? 0
+        : Math.round((haveIds.length / idsForScore.length) * 100);
+
+    return {
+      recipe,
+      score,
+      haveIds,
+      missingIds,
+      total: idsForScore.length,
+    };
+  }
+
+  const suggestedResults = useMemo(() => {
+    return suggestedRecipes
+      .map(buildMatch)
+      .filter((result) => result.haveIds.length > 0)
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return a.missingIds.length - b.missingIds.length;
       });
-    }
-  }
+  }, [suggestedRecipes, fridgeIngredientIds, fridgeNames]);
 
-  async function clearActiveRecipes() {
-    setActiveRecipeIds([]);
-    setMessage("");
-    saveActiveRecipeIds([]);
-
-    if (familyId) {
-      await addActivity({
-        familyId,
-        userId: appUser?.uid || "unknown",
-        userName: appUser?.displayName || "Без имени",
-        type: "ai_recipes_clear",
-        title: "Очистил готовку",
-        message: "Очистил список «Готовлю сейчас»",
-        emoji: "🧹",
-        itemName: "Готовлю сейчас",
+  const searchResults = useMemo(() => {
+    return searchRecipes
+      .map(buildMatch)
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return a.missingIds.length - b.missingIds.length;
       });
-    }
+  }, [searchRecipes, fridgeIngredientIds, fridgeNames]);
+
+  function getRecipeTime(recipe: Recipe) {
+    if (recipe.cookingTimeText) return recipe.cookingTimeText;
+    if (recipe.cookingTime) return `${recipe.cookingTime} мин`;
+    return "";
   }
 
-  function openRecipe(result: MatchResult) {
-    setSelectedRecipe(result);
-  }
-
-  async function addIngredientsToShopping(
-    result: MatchResult,
-    ingredients: string[],
-    label: string
-  ) {
+  async function addMissingToShopping(result: MatchResult) {
     if (!familyId) return;
 
-    for (const ingredientName of ingredients) {
+    for (const ingredientId of result.missingIds) {
+      const name = getIngredientLabel(result.recipe, ingredientId);
+
       await addDoc(collection(db, "families", familyId, "shopping"), {
-        name: ingredientName,
-        createdAt: new Date(),
+        name,
+        ingredientId,
+        createdAt: serverTimestamp(),
         source: "AI Cook",
         recipeId: result.recipe.id,
       });
@@ -347,601 +296,338 @@ export default function AiCookPage() {
         userName: appUser?.displayName || "Без имени",
         type: "ai_add_to_shopping",
         title: "AI добавил ингредиент",
-        message: `${ingredientName} для блюда ${result.recipe.title}`,
+        message: `${name} для блюда ${result.recipe.title}`,
         emoji: "🤖",
-        itemName: ingredientName,
+        itemName: name,
       });
     }
 
-    await addActivity({
-      familyId,
-      userId: appUser?.uid || "unknown",
-      userName: appUser?.displayName || "Без имени",
-      type: "ai_recipe_selected",
-      title: "Выбрал рецепт",
-      message: result.recipe.title,
-      emoji: "🍳",
-      itemName: result.recipe.title,
-    });
-
-    await addActiveRecipe(result.recipe.id);
-    setMessage(`${label} для "${result.recipe.title}" добавлены в покупки.`);
+    setMessage(`Недостающие продукты для "${result.recipe.title}" добавлены в покупки.`);
   }
 
-  function RecipeCard({
-    result,
-    compact = false,
-    showRemove = false,
-  }: {
-    result: MatchResult;
-    compact?: boolean;
-    showRemove?: boolean;
-  }) {
-    const isActive = activeRecipeIds.includes(result.recipe.id);
+  function RecipeCard({ result }: { result: MatchResult }) {
+    const recipe = result.recipe;
 
     return (
-      <motion.div
+      <motion.button
         layout
-        initial={{ opacity: 0, y: 15, scale: 0.98 }}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        exit={{ opacity: 0, y: -15, scale: 0.98 }}
-        transition={{ duration: 0.2 }}
-        className="rounded-3xl bg-slate-50 p-4"
-      >
-        <motion.button
-          whileTap={{ scale: 0.98 }}
-          onClick={() => openRecipe(result)}
-          className="w-full text-left"
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-lg font-bold">
-                {result.recipe.emoji} {result.recipe.title}
-              </div>
-
-              <div className="mt-1 text-sm text-slate-500">
-                ⏱ {result.recipe.time} · 🍽 {result.recipe.portions}
-              </div>
-
-              <div className="mt-1 text-sm text-slate-500">
-                ⭐ {result.recipe.difficulty}
-              </div>
-            </div>
-
-            <div
-              className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-full text-sm font-bold ${
-                result.score === 100
-                  ? "bg-green-500 text-white"
-                  : result.score >= 70
-                  ? "bg-green-100 text-green-700"
-                  : "bg-orange-100 text-orange-700"
-              }`}
-            >
-              {result.score}%
-            </div>
-          </div>
-
-          {!compact && (
-            <>
-              <div className="mt-3 h-2 rounded-full bg-slate-200">
-                <motion.div
-                  initial={{ width: 0 }}
-                  animate={{ width: `${result.score}%` }}
-                  transition={{ duration: 0.45 }}
-                  className={`h-2 rounded-full ${
-                    result.score === 100
-                      ? "bg-green-500"
-                      : result.score >= 70
-                      ? "bg-green-400"
-                      : "bg-orange-400"
-                  }`}
-                />
-              </div>
-
-              {result.missingRequired.length > 0 ? (
-                <p className="mt-3 text-sm text-slate-500">
-                  Не хватает: {result.missingRequired.slice(0, 4).join(", ")}
-                  {result.missingRequired.length > 4 ? "..." : ""}
-                </p>
-              ) : (
-                <p className="mt-3 text-sm font-medium text-green-600">
-                  Все основные ингредиенты есть
-                </p>
-              )}
-
-              {result.missingOptional.length > 0 && (
-                <p className="mt-1 text-sm text-orange-500">
-                  Желательно: {result.missingOptional.slice(0, 3).join(", ")}
-                  {result.missingOptional.length > 3 ? "..." : ""}
-                </p>
-              )}
-            </>
-          )}
-        </motion.button>
-
-        <div className="mt-3 flex gap-2">
-          {!isActive && (
-            <motion.button
-              whileTap={{ scale: 0.95 }}
-              whileHover={{ scale: 1.02 }}
-              onClick={() => addActiveRecipe(result.recipe.id)}
-              className="flex-1 rounded-2xl bg-green-500 px-3 py-2 text-sm font-medium text-white"
-            >
-              👨‍🍳 Готовлю
-            </motion.button>
-          )}
-
-          {isActive && !showRemove && (
-            <motion.button
-              whileTap={{ scale: 0.95 }}
-              whileHover={{ scale: 1.02 }}
-              onClick={() => removeActiveRecipe(result.recipe.id)}
-              className="flex-1 rounded-2xl bg-green-100 px-3 py-2 text-sm font-medium text-green-700"
-            >
-              ✅ Уже готовлю
-            </motion.button>
-          )}
-
-          {showRemove && (
-            <motion.button
-              whileTap={{ scale: 0.95 }}
-              whileHover={{ scale: 1.02 }}
-              onClick={() => removeActiveRecipe(result.recipe.id)}
-              className="flex-1 rounded-2xl bg-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
-            >
-              Убрать
-            </motion.button>
-          )}
-        </div>
-      </motion.div>
-    );
-  }
-
-  function CategorySection({
-    title,
-    items,
-    color,
-  }: {
-    title: string;
-    items: MatchResult[];
-    color: "orange" | "slate";
-  }) {
-    const isOpen = openCategories[title] ?? false;
-    const visibleItems = isOpen ? items : [];
-
-    return (
-      <motion.div
-        layout
-        initial={{ opacity: 0, y: 14 }}
+        initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.22 }}
-        className="rounded-3xl bg-white p-5 shadow-sm"
+        exit={{ opacity: 0, y: -12 }}
+        whileTap={{ scale: 0.98 }}
+        onClick={() => {
+          setSelectedRecipe(result);
+          setMessage("");
+        }}
+        className="w-full rounded-3xl bg-white p-4 text-left shadow-sm"
       >
-        <motion.button
-          whileTap={{ scale: 0.98 }}
-          onClick={() => toggleCategory(title)}
-          className="flex w-full items-center justify-between text-left"
-        >
+        <div className="flex items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-semibold">{title}</h2>
+            <h3 className="text-lg font-semibold text-slate-900">
+              🍳 {recipe.title}
+            </h3>
+
             <p className="mt-1 text-sm text-slate-500">
-              {isOpen ? "Скрыть блюда" : "Нажми, чтобы раскрыть"}
+              {recipe.category || "Рецепт"}
+              {getRecipeTime(recipe) ? ` · ${getRecipeTime(recipe)}` : ""}
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
-            <span
-              className={`rounded-full px-3 py-1 text-sm ${
-                color === "orange"
-                  ? "bg-orange-100 text-orange-700"
-                  : "bg-slate-100 text-slate-500"
-              }`}
-            >
-              {items.length}
-            </span>
-
-            <motion.span
-              animate={{ rotate: isOpen ? 180 : 0 }}
-              transition={{ duration: 0.2 }}
-              className="text-xl text-slate-400"
-            >
-              ⌄
-            </motion.span>
-          </div>
-        </motion.button>
-
-        <AnimatePresence>
-          {isOpen && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              exit={{ opacity: 0, height: 0 }}
-              transition={{ duration: 0.2 }}
-              className="overflow-hidden"
-            >
-              <div className="mt-4 space-y-3">
-                {visibleItems.map((result) => (
-                  <RecipeCard
-                    key={result.recipe.id}
-                    result={result}
-                    compact={color === "slate"}
-                  />
-                ))}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </motion.div>
-    );
-  }
-
-  if (selectedRecipe) {
-    const recipe = selectedRecipe.recipe;
-    const isActive = activeRecipeIds.includes(recipe.id);
-
-    return (
-      <main className="min-h-screen bg-slate-100 text-slate-900">
-        <div className="mx-auto min-h-screen max-w-md bg-slate-50 pb-24">
-          <motion.header
-            initial={{ opacity: 0, y: -12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.25 }}
-            className="px-5 pt-8 pb-4"
+          <div
+            className={`rounded-full px-3 py-1 text-sm font-semibold ${
+              result.score === 100
+                ? "bg-green-100 text-green-700"
+                : result.score >= 70
+                ? "bg-orange-100 text-orange-700"
+                : "bg-slate-100 text-slate-600"
+            }`}
           >
-            <motion.button
-              whileTap={{ scale: 0.95 }}
-              onClick={() => setSelectedRecipe(null)}
-              className="mb-4 rounded-full bg-white px-4 py-2 text-sm text-slate-600 shadow-sm"
-            >
-              ← Назад
-            </motion.button>
-
-            <p className="text-sm text-slate-500">AI Cook</p>
-            <h1 className="text-3xl font-bold">
-              {recipe.emoji} {recipe.title}
-            </h1>
-          </motion.header>
-
-          <section className="px-5 space-y-5">
-            <motion.div
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.25 }}
-              className="rounded-3xl bg-white p-5 shadow-sm"
-            >
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-slate-500">Готовность</p>
-                  <h2 className="text-4xl font-bold text-green-600">
-                    {selectedRecipe.score}%
-                  </h2>
-                </div>
-
-                <div className="text-right text-sm text-slate-500">
-                  <p>⏱ {recipe.time}</p>
-                  <p>🍽 {recipe.portions}</p>
-                  <p>⭐ {recipe.difficulty}</p>
-                  <p>📌 {recipe.category}</p>
-                </div>
-              </div>
-
-              {!isActive ? (
-                <motion.button
-                  whileTap={{ scale: 0.96 }}
-                  onClick={() => addActiveRecipe(recipe.id)}
-                  className="mt-4 w-full rounded-2xl bg-green-500 px-4 py-3 font-medium text-white"
-                >
-                  👨‍🍳 Добавить в «Готовлю сейчас»
-                </motion.button>
-              ) : (
-                <motion.button
-                  whileTap={{ scale: 0.96 }}
-                  onClick={() => removeActiveRecipe(recipe.id)}
-                  className="mt-4 w-full rounded-2xl bg-slate-200 px-4 py-3 font-medium text-slate-700"
-                >
-                  Убрать из «Готовлю сейчас»
-                </motion.button>
-              )}
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.25, delay: 0.05 }}
-              className="rounded-3xl bg-white p-5 shadow-sm"
-            >
-              <h2 className="mb-3 text-lg font-semibold">Ингредиенты</h2>
-
-              <div className="space-y-2">
-                {recipe.ingredients.map((ingredient, index) => {
-                  const exists = fridgeNames.includes(
-                    normalizeProductName(ingredient.name)
-                  );
-
-                  return (
-                    <motion.div
-                      key={ingredient.name}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ duration: 0.18, delay: index * 0.02 }}
-                      className="flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3"
-                    >
-                      <span>{ingredient.name}</span>
-                      <span
-                        className={
-                          exists
-                            ? "font-medium text-green-600"
-                            : ingredient.optional
-                            ? "font-medium text-orange-500"
-                            : "font-medium text-red-500"
-                        }
-                      >
-                        {exists
-                          ? "Есть"
-                          : ingredient.optional
-                          ? "Желательно"
-                          : "Нет"}
-                      </span>
-                    </motion.div>
-                  );
-                })}
-              </div>
-
-              {selectedRecipe.missingRequired.length > 0 && (
-                <motion.button
-                  whileTap={{ scale: 0.96 }}
-                  onClick={() =>
-                    addIngredientsToShopping(
-                      selectedRecipe,
-                      selectedRecipe.missingRequired,
-                      "Обязательные продукты"
-                    )
-                  }
-                  className="mt-4 w-full rounded-2xl bg-green-500 px-4 py-3 font-medium text-white"
-                >
-                  🛒 Добавить обязательное в покупки
-                </motion.button>
-              )}
-
-              {selectedRecipe.missingOptional.length > 0 && (
-                <motion.button
-                  whileTap={{ scale: 0.96 }}
-                  onClick={() =>
-                    addIngredientsToShopping(
-                      selectedRecipe,
-                      selectedRecipe.missingOptional,
-                      "Желательные продукты"
-                    )
-                  }
-                  className="mt-3 w-full rounded-2xl bg-orange-100 px-4 py-3 font-medium text-orange-700"
-                >
-                  ➕ Добавить желательное в покупки
-                </motion.button>
-              )}
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.25, delay: 0.1 }}
-              className="rounded-3xl bg-white p-5 shadow-sm"
-            >
-              <h2 className="mb-3 text-lg font-semibold">Приготовление</h2>
-
-              <div className="space-y-3">
-                {recipe.steps.map((step, index) => (
-                  <motion.div
-                    key={`${step}-${index}`}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.18, delay: index * 0.03 }}
-                    className="rounded-2xl bg-slate-50 px-4 py-3"
-                  >
-                    <p className="text-sm font-semibold text-slate-500">
-                      Шаг {index + 1}
-                    </p>
-                    <p className="mt-1 leading-relaxed">{step}</p>
-                  </motion.div>
-                ))}
-              </div>
-            </motion.div>
-          </section>
-
-          <BottomNav current="ai" />
+            {result.score}%
+          </div>
         </div>
-      </main>
+
+        <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
+          <div
+            className={`h-full rounded-full ${
+              result.score === 100
+                ? "bg-green-500"
+                : result.score >= 70
+                ? "bg-orange-400"
+                : "bg-slate-400"
+            }`}
+            style={{ width: `${result.score}%` }}
+          />
+        </div>
+
+        <p className="mt-3 text-sm text-slate-500">
+          Есть {result.haveIds.length} из {result.total}
+          {result.missingIds.length > 0
+            ? ` · не хватает ${result.missingIds.length}`
+            : " · можно готовить"}
+        </p>
+      </motion.button>
     );
   }
+
+  const isSearchMode = normalizeText(search).length >= 2;
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
       <div className="mx-auto min-h-screen max-w-md bg-slate-50 pb-24">
-        <motion.header
-          initial={{ opacity: 0, y: -12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.25 }}
-          className="px-5 pt-8 pb-4"
-        >
+        <header className="px-5 pt-8 pb-4">
           <p className="text-sm text-slate-500">FamilyShop</p>
           <h1 className="text-3xl font-bold">AI Cook 🤖</h1>
-        </motion.header>
+          <p className="mt-1 text-sm text-slate-500">
+            Подбор рецептов из холодильника без лишней нагрузки на базу
+          </p>
+        </header>
 
-        <section className="px-5 space-y-5">
-          <motion.div
-            initial={{ opacity: 0, y: 14 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.25 }}
-            className="rounded-3xl bg-white p-5 shadow-sm"
-          >
-            <motion.button
-              whileTap={{ scale: 0.98 }}
-              onClick={() => setIsFridgeOpen(!isFridgeOpen)}
-              className="flex w-full items-center justify-between text-left"
-            >
-              <div>
-                <h2 className="text-lg font-semibold">Есть дома</h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  {isFridgeOpen ? "Скрыть продукты" : "Показать продукты"}
-                </p>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <span className="rounded-full bg-blue-100 px-3 py-1 text-sm text-blue-700">
-                  {fridgeItems.length}
-                </span>
-
-                <motion.span
-                  animate={{ rotate: isFridgeOpen ? 180 : 0 }}
-                  transition={{ duration: 0.2 }}
-                  className="text-xl text-slate-400"
-                >
-                  ⌄
-                </motion.span>
-              </div>
-            </motion.button>
-
-            <AnimatePresence>
-              {isFridgeOpen && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ duration: 0.2 }}
-                  className="overflow-hidden"
-                >
-                  <div className="mt-4">
-                    {loading ? (
-                      <p className="text-sm text-slate-500">Загрузка...</p>
-                    ) : fridgeItems.length === 0 ? (
-                      <p className="text-sm text-slate-500">
-                        Добавь продукты в холодильник, и я подберу блюда.
-                      </p>
-                    ) : (
-                      <div className="space-y-2">
-                        {fridgeItems.map((item, index) => (
-                          <motion.div
-                            key={item.id}
-                            initial={{ opacity: 0, y: 8 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ duration: 0.15, delay: index * 0.02 }}
-                            className="rounded-2xl bg-slate-50 px-4 py-3 text-sm font-medium"
-                          >
-                            {getCleanName(item.name)}
-                          </motion.div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </motion.div>
-
-          <AnimatePresence mode="popLayout">
-            {activeRecipes.length > 0 && (
-              <motion.div
-                key="active-recipes"
-                layout
-                initial={{ opacity: 0, y: 14, scale: 0.98 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -14, scale: 0.98 }}
-                transition={{ duration: 0.22 }}
-                className="rounded-3xl bg-white p-5 shadow-sm"
-              >
-                <div className="mb-3 flex items-center justify-between">
-                  <h2 className="text-lg font-semibold">👨‍🍳 Готовлю сейчас</h2>
-
-                  <motion.button
-                    whileTap={{ scale: 0.95 }}
-                    onClick={clearActiveRecipes}
-                    className="text-sm text-slate-400"
-                  >
-                    Очистить
-                  </motion.button>
-                </div>
-
-                <div className="space-y-3">
-                  {activeRecipes.map((result) => (
-                    <RecipeCard
-                      key={result.recipe.id}
-                      result={result}
-                      showRemove
-                    />
-                  ))}
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          <AnimatePresence>
-            {message && (
-              <motion.div
-                initial={{ opacity: 0, y: -12, scale: 0.98 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -12, scale: 0.98 }}
-                transition={{ duration: 0.2 }}
-                className="rounded-2xl bg-green-50 p-4 text-sm text-green-700"
-              >
-                {message}
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          <motion.input
-            initial={{ opacity: 0, y: 14 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.25, delay: 0.05 }}
+        <section className="space-y-4 px-5">
+          <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
-            placeholder="🔍 Найти рецепт или ингредиент"
+            placeholder="🔍 Поиск рецепта от 2 букв"
+            className="w-full rounded-3xl border border-slate-200 bg-white px-5 py-4 text-base outline-none transition focus:border-blue-400"
           />
 
-          <motion.div
-            initial={{ opacity: 0, y: 14 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.25, delay: 0.08 }}
-            className="rounded-3xl bg-white p-5 shadow-sm"
-          >
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">✅ Готово сейчас</h2>
+          <div className="grid grid-cols-2 gap-3">
+            <Link href="/recipes" className="rounded-3xl bg-white p-4 shadow-sm">
+              <div className="text-2xl">📖</div>
+              <div className="mt-2 font-semibold">Книга рецептов</div>
+              <div className="mt-1 text-xs text-slate-500">Поиск отдельно</div>
+            </Link>
 
-              <span className="rounded-full bg-green-100 px-3 py-1 text-sm text-green-700">
-                {readyResults.length}
-              </span>
-            </div>
-
-            {readyResults.length === 0 ? (
-              <p className="text-sm text-slate-500">
-                Пока нет блюд на 100%. Добавь больше продуктов в холодильник.
-              </p>
-            ) : (
-              <div className="space-y-3">
-                {readyResults.slice(0, 15).map((result) => (
-                  <RecipeCard key={result.recipe.id} result={result} />
-                ))}
+            <button
+              onClick={() => setIsFridgeOpen((prev) => !prev)}
+              className="rounded-3xl bg-white p-4 text-left shadow-sm"
+            >
+              <div className="text-2xl">🥛</div>
+              <div className="mt-2 font-semibold">Есть дома</div>
+              <div className="mt-1 text-xs text-slate-500">
+                {loadingFridge ? "Загрузка..." : `${fridgeItems.length} товаров`}
               </div>
+            </button>
+          </div>
+
+          <AnimatePresence>
+            {isFridgeOpen && (
+              <motion.div
+                initial={{ opacity: 0, height: 0, y: -8 }}
+                animate={{ opacity: 1, height: "auto", y: 0 }}
+                exit={{ opacity: 0, height: 0, y: -8 }}
+                className="overflow-hidden rounded-3xl bg-white p-4 shadow-sm"
+              >
+                {fridgeItems.length === 0 ? (
+                  <p className="text-sm text-slate-500">Холодильник пуст.</p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {fridgeItems.map((item) => (
+                      <span
+                        key={item.id}
+                        className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-700"
+                      >
+                        {item.name}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </motion.div>
             )}
-          </motion.div>
+          </AnimatePresence>
 
-          {Object.entries(groupedAlmost).map(([category, items]) => (
-            <CategorySection
-              key={`almost-${category}`}
-              title={`🟡 Почти готово: ${category}`}
-              items={items}
-              color="orange"
-            />
-          ))}
+          {message && (
+            <div className="rounded-3xl bg-green-100 px-4 py-3 text-sm text-green-700">
+              {message}
+            </div>
+          )}
 
-          {Object.entries(groupedOther).map(([category, items]) => (
-            <CategorySection
-              key={`other-${category}`}
-              title={`🔎 Ещё варианты: ${category}`}
-              items={items}
-              color="slate"
-            />
-          ))}
+          {isSearchMode ? (
+            <div>
+              <h2 className="mb-3 text-xl font-bold">🔍 Результаты поиска</h2>
+
+              {loadingSearch ? (
+                <div className="rounded-3xl bg-white p-5 text-sm text-slate-500 shadow-sm">
+                  Ищу рецепты...
+                </div>
+              ) : searchResults.length === 0 ? (
+                <div className="rounded-3xl bg-white p-5 text-center shadow-sm">
+                  <div className="text-4xl">🤔</div>
+                  <h3 className="mt-3 text-lg font-semibold">Ничего не найдено</h3>
+                  <p className="mt-2 text-sm text-slate-500">
+                    Попробуй другое название блюда.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <AnimatePresence>
+                    {searchResults.map((result) => (
+                      <RecipeCard key={result.recipe.id} result={result} />
+                    ))}
+                  </AnimatePresence>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div>
+              <h2 className="mb-3 text-xl font-bold">🍳 Что можно приготовить</h2>
+
+              {fridgeItems.length === 0 && !loadingFridge ? (
+                <div className="rounded-3xl bg-white p-5 text-center shadow-sm">
+                  <div className="text-4xl">🥛</div>
+                  <h3 className="mt-3 text-lg font-semibold">Холодильник пуст</h3>
+                  <p className="mt-2 text-sm text-slate-500">
+                    Купленные товары будут появляться в холодильнике.
+                  </p>
+                  <Link
+                    href="/fridge"
+                    className="mt-4 inline-block rounded-2xl bg-black px-4 py-3 text-sm font-medium text-white"
+                  >
+                    Перейти в холодильник
+                  </Link>
+                </div>
+              ) : loadingSuggestions ? (
+                <div className="rounded-3xl bg-white p-5 text-sm text-slate-500 shadow-sm">
+                  Подбираю 50 рецептов...
+                </div>
+              ) : suggestedResults.length === 0 ? (
+                <div className="rounded-3xl bg-white p-5 text-sm text-slate-500 shadow-sm">
+                  Пока нет подходящих рецептов.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <AnimatePresence>
+                    {suggestedResults.slice(0, 50).map((result) => (
+                      <RecipeCard key={result.recipe.id} result={result} />
+                    ))}
+                  </AnimatePresence>
+                </div>
+              )}
+            </div>
+          )}
         </section>
+
+        {selectedRecipe && (
+          <div className="fixed inset-0 z-50 bg-black/40 px-4 py-6">
+            <div className="mx-auto flex max-h-full max-w-md flex-col rounded-3xl bg-white">
+              <div className="border-b border-slate-100 p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-2xl font-bold">
+                      {selectedRecipe.recipe.title}
+                    </h2>
+
+                    <p className="mt-1 text-sm text-slate-500">
+                      {selectedRecipe.recipe.category || "Рецепт"}
+                      {getRecipeTime(selectedRecipe.recipe)
+                        ? ` · ${getRecipeTime(selectedRecipe.recipe)}`
+                        : ""}
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={() => setSelectedRecipe(null)}
+                    className="rounded-full bg-slate-100 px-3 py-2 text-sm"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-y-auto p-5">
+                <div className="mb-5 rounded-3xl bg-slate-50 p-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm text-slate-500">Готовность</div>
+                      <div className="text-2xl font-bold">
+                        {selectedRecipe.score}%
+                      </div>
+                    </div>
+
+                    <div className="text-sm text-slate-500">
+                      Есть {selectedRecipe.haveIds.length} из {selectedRecipe.total}
+                    </div>
+                  </div>
+
+                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200">
+                    <div
+                      className="h-full rounded-full bg-green-500"
+                      style={{ width: `${selectedRecipe.score}%` }}
+                    />
+                  </div>
+                </div>
+
+                {selectedRecipe.recipe.description && (
+                  <p className="mb-5 text-sm leading-6 text-slate-700">
+                    {selectedRecipe.recipe.description}
+                  </p>
+                )}
+
+                <h3 className="mb-2 font-semibold">Есть дома</h3>
+
+                <div className="mb-5 space-y-2">
+                  {selectedRecipe.haveIds.length === 0 ? (
+                    <p className="text-sm text-slate-500">
+                      Из нужных ингредиентов дома ничего нет.
+                    </p>
+                  ) : (
+                    selectedRecipe.haveIds.map((id) => (
+                      <div
+                        key={id}
+                        className="rounded-2xl bg-green-50 px-4 py-2 text-sm text-green-700"
+                      >
+                        ✓ {getIngredientLabel(selectedRecipe.recipe, id)}
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {selectedRecipe.missingIds.length > 0 && (
+                  <>
+                    <h3 className="mb-2 font-semibold">Не хватает</h3>
+
+                    <div className="mb-5 space-y-2">
+                      {selectedRecipe.missingIds.map((id) => (
+                        <div
+                          key={id}
+                          className="rounded-2xl bg-orange-50 px-4 py-2 text-sm text-orange-700"
+                        >
+                          + {getIngredientLabel(selectedRecipe.recipe, id)}
+                        </div>
+                      ))}
+                    </div>
+
+                    <button
+                      onClick={() => addMissingToShopping(selectedRecipe)}
+                      className="mb-5 w-full rounded-2xl bg-green-500 px-4 py-3 font-medium text-white"
+                    >
+                      🛒 Добавить недостающее в покупки
+                    </button>
+                  </>
+                )}
+
+                <h3 className="mb-2 font-semibold">Приготовление</h3>
+
+                <div className="space-y-3">
+                  {(selectedRecipe.recipe.steps || []).map((step, index) => (
+                    <div
+                      key={`${step}-${index}`}
+                      className="rounded-2xl bg-slate-50 p-4 text-sm leading-6 text-slate-700"
+                    >
+                      <b>Шаг {index + 1}.</b> {step}
+                    </div>
+                  ))}
+                </div>
+
+                {(!selectedRecipe.recipe.steps ||
+                  selectedRecipe.recipe.steps.length === 0) && (
+                  <p className="text-sm text-slate-500">
+                    Шаги приготовления не указаны.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         <BottomNav current="ai" />
       </div>

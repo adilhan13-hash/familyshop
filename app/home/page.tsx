@@ -30,7 +30,6 @@ type CountState = {
   shopping: number;
   fridge: number;
   wish: number;
-  activity: number;
 };
 
 function getInitials(name?: string) {
@@ -68,7 +67,6 @@ export default function HomePage() {
     shopping: 0,
     fridge: 0,
     wish: 0,
-    activity: 0,
   });
 
   useEffect(() => {
@@ -77,7 +75,7 @@ export default function HomePage() {
     const activityQuery = query(
       collection(db, "families", familyId, "activity"),
       orderBy("createdAt", "desc"),
-      limit(50)
+      limit(20)
     );
 
     const unsubscribe = onSnapshot(activityQuery, (snapshot) => {
@@ -126,13 +124,6 @@ export default function HomePage() {
         setCounts((current) => ({
           ...current,
           wish: snapshot.size,
-        }));
-      }),
-
-      onSnapshot(collection(db, "families", familyId, "activity"), (snapshot) => {
-        setCounts((current) => ({
-          ...current,
-          activity: snapshot.size,
         }));
       }),
     ];
@@ -207,7 +198,7 @@ export default function HomePage() {
               <div>
                 <h2 className="text-lg font-semibold">Сегодня</h2>
                 <p className="text-sm text-slate-500">
-                  Последние действия семьи
+                  Последние 20 действий семьи
                 </p>
               </div>
 

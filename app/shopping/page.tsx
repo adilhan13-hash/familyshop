@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import BottomNav from "../../components/BottomNav";
 import { useFamilyAuth } from "../../components/AuthProvider";
@@ -10,7 +10,12 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDocs,
+  limit,
   onSnapshot,
+  query,
+  serverTimestamp,
+  where,
 } from "firebase/firestore";
 import { addActivity } from "../../lib/activity";
 
@@ -39,11 +44,31 @@ export default function ShoppingPage() {
 
   const [shoppingList, setShoppingList] = useState<ShoppingItem[]>([]);
   const [fridgeList, setFridgeList] = useState<FridgeItem[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [selectedCategory, setSelectedCategory] = useState<string>("Популярные");
+  const [popularProducts, setPopularProducts] = useState<Product[]>([]);
+  const [searchProducts, setSearchProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState("");
+
   const [loadingShopping, setLoadingShopping] = useState(true);
   const [loadingProducts, setLoadingProducts] = useState(true);
+  const [loadingSearch, setLoadingSearch] = useState(false);
+
+  function normalizeName(name: string) {
+    return name.trim().toLowerCase();
+  }
+
+  function productFromDoc(document: any): Product | null {
+    const data = document.data();
+
+    if (!data.name) return null;
+
+    return {
+      id: document.id,
+      icon: data.icon || "🛒",
+      name: data.name,
+      category: data.category || "Другое",
+      popular: Boolean(data.popular),
+    };
+  }
 
   useEffect(() => {
     if (!familyId) return;
@@ -99,61 +124,78 @@ export default function ShoppingPage() {
   }, [familyId]);
 
   useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, "products"), (snapshot) => {
-      const items: Product[] = [];
+    async function loadPopularProducts() {
+      try {
+        setLoadingProducts(true);
 
-      snapshot.forEach((document) => {
-        const data = document.data();
+        const productsQuery = query(
+          collection(db, "products"),
+          where("popular", "==", true),
+          limit(24)
+        );
 
-        if (data.name && data.icon && data.category) {
-          items.push({
-            id: document.id,
-            icon: data.icon,
-            name: data.name,
-            category: data.category,
-            popular: Boolean(data.popular),
-          });
-        }
-      });
+        const snapshot = await getDocs(productsQuery);
 
-      items.sort((a, b) => a.name.localeCompare(b.name, "ru"));
+        const items: Product[] = [];
 
-      setProducts(items);
-      setLoadingProducts(false);
-    });
+        snapshot.forEach((document) => {
+          const product = productFromDoc(document);
+          if (product) items.push(product);
+        });
 
-    return () => unsubscribe();
-  }, []);
+        items.sort((a, b) => a.name.localeCompare(b.name, "ru"));
 
-  const categories = useMemo(() => {
-    const uniqueCategories = Array.from(
-      new Set(products.map((product) => product.category))
-    ).sort((a, b) => a.localeCompare(b, "ru"));
-
-    return ["Популярные", ...uniqueCategories];
-  }, [products]);
-
-  const searchResults = useMemo(() => {
-    if (!search.trim()) return [];
-
-    const query = search.trim().toLowerCase();
-
-    return products.filter((product) =>
-      product.name.toLowerCase().includes(query)
-    );
-  }, [products, search]);
-
-  const categoryProducts = useMemo(() => {
-    if (selectedCategory === "Популярные") {
-      return products.filter((product) => product.popular);
+        setPopularProducts(items);
+      } catch (error) {
+        console.error("POPULAR PRODUCTS LOAD ERROR", error);
+      } finally {
+        setLoadingProducts(false);
+      }
     }
 
-    return products.filter((product) => product.category === selectedCategory);
-  }, [products, selectedCategory]);
+    loadPopularProducts();
+  }, []);
 
-  function normalizeName(name: string) {
-    return name.trim().toLowerCase();
-  }
+  useEffect(() => {
+    const searchText = normalizeName(search);
+
+    if (searchText.length < 2) {
+      setSearchProducts([]);
+      setLoadingSearch(false);
+      return;
+    }
+
+    const timeout = setTimeout(async () => {
+      try {
+        setLoadingSearch(true);
+
+        const productsQuery = query(
+          collection(db, "products"),
+          where("search", "array-contains", searchText),
+          limit(24)
+        );
+
+        const snapshot = await getDocs(productsQuery);
+
+        const items: Product[] = [];
+
+        snapshot.forEach((document) => {
+          const product = productFromDoc(document);
+          if (product) items.push(product);
+        });
+
+        items.sort((a, b) => a.name.localeCompare(b.name, "ru"));
+
+        setSearchProducts(items);
+      } catch (error) {
+        console.error("PRODUCT SEARCH ERROR", error);
+      } finally {
+        setLoadingSearch(false);
+      }
+    }, 400);
+
+    return () => clearTimeout(timeout);
+  }, [search]);
 
   function isProductInFridge(productId?: string, name?: string) {
     return fridgeList.some((fridgeItem) => {
@@ -198,7 +240,7 @@ export default function ShoppingPage() {
       name: fullName,
       productId: product.id,
       category: product.category,
-      createdAt: new Date(),
+      createdAt: serverTimestamp(),
     });
 
     await addActivity({
@@ -240,11 +282,11 @@ export default function ShoppingPage() {
     if (!alreadyInFridge) {
       const fridgeData: {
         name: string;
-        createdAt: Date;
+        createdAt: any;
         productId?: string;
       } = {
         name: item.name,
-        createdAt: new Date(),
+        createdAt: serverTimestamp(),
       };
 
       if (item.productId) {
@@ -268,8 +310,14 @@ export default function ShoppingPage() {
     });
   }
 
-  function ProductGrid({ items }: { items: Product[] }) {
-    if (loadingProducts) {
+  function ProductGrid({
+    items,
+    loading,
+  }: {
+    items: Product[];
+    loading: boolean;
+  }) {
+    if (loading) {
       return <p className="text-sm text-slate-500">Загрузка товаров...</p>;
     }
 
@@ -321,6 +369,8 @@ export default function ShoppingPage() {
     );
   }
 
+  const isSearching = search.trim().length >= 2;
+
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
       <div className="mx-auto min-h-screen max-w-md bg-slate-50 pb-24">
@@ -331,10 +381,10 @@ export default function ShoppingPage() {
           className="px-5 pt-8 pb-4"
         >
           <p className="text-sm text-slate-500">FamilyShop</p>
-          <h1 className="text-3xl font-bold">Покупки v3 🛒</h1>
+          <h1 className="text-3xl font-bold">Покупки 🛒</h1>
         </motion.header>
 
-        <section className="px-5 space-y-5">
+        <section className="space-y-5 px-5">
           <motion.div
             initial={{ opacity: 0, y: 14 }}
             animate={{ opacity: 1, y: 0 }}
@@ -425,78 +475,39 @@ export default function ShoppingPage() {
             placeholder="🔍 Поиск товара"
           />
 
-          <AnimatePresence mode="wait">
-            {search.trim() && (
-              <motion.div
-                key="search"
-                initial={{ opacity: 0, y: 14 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -14 }}
-                transition={{ duration: 0.2 }}
-                className="rounded-3xl bg-white p-5 shadow-sm"
-              >
-                <div className="mb-4 flex items-center justify-between">
-                  <h2 className="text-lg font-semibold">Результаты поиска</h2>
+          <motion.div
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25, delay: 0.1 }}
+            className="rounded-3xl bg-white p-5 shadow-sm"
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold">
+                  {isSearching ? "Результаты поиска" : "Популярные товары"}
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  {isSearching
+                    ? "Показываем до 24 найденных товаров"
+                    : "Показываем только 24 популярных товара"}
+                </p>
+              </div>
 
-                  <span className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-500">
-                    {searchResults.length}
-                  </span>
-                </div>
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-500">
+                {isSearching ? searchProducts.length : popularProducts.length}
+              </span>
+            </div>
 
-                <ProductGrid items={searchResults} />
-              </motion.div>
+            {search.trim().length > 0 && search.trim().length < 2 ? (
+              <p className="text-sm text-slate-500">
+                Введи минимум 2 буквы для поиска.
+              </p>
+            ) : isSearching ? (
+              <ProductGrid items={searchProducts} loading={loadingSearch} />
+            ) : (
+              <ProductGrid items={popularProducts} loading={loadingProducts} />
             )}
-
-            {!search.trim() && (
-              <motion.div
-                key="categories"
-                initial={{ opacity: 0, y: 14 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -14 }}
-                transition={{ duration: 0.2 }}
-                className="space-y-5"
-              >
-                <div className="rounded-3xl bg-white p-5 shadow-sm">
-                  <h2 className="mb-4 text-lg font-semibold">Категории</h2>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    {categories.map((category) => {
-                      const isActive = selectedCategory === category;
-
-                      return (
-                        <motion.button
-                          key={category}
-                          whileTap={{ scale: 0.96 }}
-                          onClick={() => setSelectedCategory(category)}
-                          className={`rounded-2xl px-4 py-3 text-left text-sm ${
-                            isActive
-                              ? "bg-green-500 text-white"
-                              : "bg-slate-100 text-slate-700"
-                          }`}
-                        >
-                          {category}
-                        </motion.button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div className="rounded-3xl bg-white p-5 shadow-sm">
-                  <div className="mb-4 flex items-center justify-between">
-                    <h2 className="text-lg font-semibold">
-                      {selectedCategory}
-                    </h2>
-
-                    <span className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-500">
-                      {categoryProducts.length}
-                    </span>
-                  </div>
-
-                  <ProductGrid items={categoryProducts} />
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          </motion.div>
         </section>
 
         <BottomNav current="shopping" />
