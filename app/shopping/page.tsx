@@ -11,10 +11,13 @@ import {
   deleteDoc,
   doc,
   getDocs,
+  increment,
   limit,
   onSnapshot,
+  orderBy,
   query,
   serverTimestamp,
+  setDoc,
   where,
 } from "firebase/firestore";
 import { addActivity } from "../../lib/activity";
@@ -23,6 +26,9 @@ type ShoppingItem = {
   id: string;
   name: string;
   productId?: string;
+  productName?: string;
+  icon?: string;
+  category?: string;
 };
 
 type FridgeItem = {
@@ -36,7 +42,7 @@ type Product = {
   icon: string;
   name: string;
   category: string;
-  popular: boolean;
+  purchaseCount?: number;
 };
 
 export default function ShoppingPage() {
@@ -44,16 +50,23 @@ export default function ShoppingPage() {
 
   const [shoppingList, setShoppingList] = useState<ShoppingItem[]>([]);
   const [fridgeList, setFridgeList] = useState<FridgeItem[]>([]);
-  const [popularProducts, setPopularProducts] = useState<Product[]>([]);
+  const [frequentProducts, setFrequentProducts] = useState<Product[]>([]);
   const [searchProducts, setSearchProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState("");
 
   const [loadingShopping, setLoadingShopping] = useState(true);
-  const [loadingProducts, setLoadingProducts] = useState(true);
+  const [loadingFrequent, setLoadingFrequent] = useState(true);
   const [loadingSearch, setLoadingSearch] = useState(false);
 
   function normalizeName(name: string) {
     return name.trim().toLowerCase();
+  }
+
+  function makeSafeId(value: string) {
+    return normalizeName(value)
+      .replace(/[^\p{L}\p{N}]+/gu, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80);
   }
 
   function productFromDoc(document: any): Product | null {
@@ -66,33 +79,37 @@ export default function ShoppingPage() {
       icon: data.icon || "🛒",
       name: data.name,
       category: data.category || "Другое",
-      popular: Boolean(data.popular),
+      purchaseCount: data.purchaseCount || 0,
     };
   }
 
   useEffect(() => {
     if (!familyId) return;
 
-    const shoppingCollection = collection(db, "families", familyId, "shopping");
+    const unsubscribe = onSnapshot(
+      collection(db, "families", familyId, "shopping"),
+      (snapshot) => {
+        const items: ShoppingItem[] = [];
 
-    const unsubscribe = onSnapshot(shoppingCollection, (snapshot) => {
-      const items: ShoppingItem[] = [];
+        snapshot.forEach((document) => {
+          const data = document.data();
 
-      snapshot.forEach((document) => {
-        const data = document.data();
+          if (data.name) {
+            items.push({
+              id: document.id,
+              name: data.name,
+              productId: data.productId,
+              productName: data.productName,
+              icon: data.icon,
+              category: data.category,
+            });
+          }
+        });
 
-        if (data.name) {
-          items.push({
-            id: document.id,
-            name: data.name,
-            productId: data.productId,
-          });
-        }
-      });
-
-      setShoppingList(items);
-      setLoadingShopping(false);
-    });
+        setShoppingList(items);
+        setLoadingShopping(false);
+      }
+    );
 
     return () => unsubscribe();
   }, [familyId]);
@@ -100,61 +117,53 @@ export default function ShoppingPage() {
   useEffect(() => {
     if (!familyId) return;
 
-    const fridgeCollection = collection(db, "families", familyId, "fridge");
+    const unsubscribe = onSnapshot(
+      collection(db, "families", familyId, "fridge"),
+      (snapshot) => {
+        const items: FridgeItem[] = [];
 
-    const unsubscribe = onSnapshot(fridgeCollection, (snapshot) => {
-      const items: FridgeItem[] = [];
+        snapshot.forEach((document) => {
+          const data = document.data();
 
-      snapshot.forEach((document) => {
-        const data = document.data();
+          if (data.name) {
+            items.push({
+              id: document.id,
+              name: data.name,
+              productId: data.productId,
+            });
+          }
+        });
 
-        if (data.name) {
-          items.push({
-            id: document.id,
-            name: data.name,
-            productId: data.productId,
-          });
-        }
-      });
-
-      setFridgeList(items);
-    });
+        setFridgeList(items);
+      }
+    );
 
     return () => unsubscribe();
   }, [familyId]);
 
   useEffect(() => {
-    async function loadPopularProducts() {
-      try {
-        setLoadingProducts(true);
+    if (!familyId) return;
 
-        const productsQuery = query(
-          collection(db, "products"),
-          where("popular", "==", true),
-          limit(24)
-        );
+    const frequentQuery = query(
+      collection(db, "families", familyId, "frequentProducts"),
+      orderBy("purchaseCount", "desc"),
+      limit(24)
+    );
 
-        const snapshot = await getDocs(productsQuery);
+    const unsubscribe = onSnapshot(frequentQuery, (snapshot) => {
+      const items: Product[] = [];
 
-        const items: Product[] = [];
+      snapshot.forEach((document) => {
+        const product = productFromDoc(document);
+        if (product) items.push(product);
+      });
 
-        snapshot.forEach((document) => {
-          const product = productFromDoc(document);
-          if (product) items.push(product);
-        });
+      setFrequentProducts(items);
+      setLoadingFrequent(false);
+    });
 
-        items.sort((a, b) => a.name.localeCompare(b.name, "ru"));
-
-        setPopularProducts(items);
-      } catch (error) {
-        console.error("POPULAR PRODUCTS LOAD ERROR", error);
-      } finally {
-        setLoadingProducts(false);
-      }
-    }
-
-    loadPopularProducts();
-  }, []);
+    return () => unsubscribe();
+  }, [familyId]);
 
   useEffect(() => {
     const searchText = normalizeName(search);
@@ -217,10 +226,7 @@ export default function ShoppingPage() {
     const fullName = `${product.icon} ${product.name}`;
 
     const alreadyExists = shoppingList.some((item) => {
-      if (item.productId) {
-        return item.productId === product.id;
-      }
-
+      if (item.productId) return item.productId === product.id;
       return normalizeName(item.name) === normalizeName(fullName);
     });
 
@@ -238,6 +244,8 @@ export default function ShoppingPage() {
 
     await addDoc(collection(db, "families", familyId, "shopping"), {
       name: fullName,
+      productName: product.name,
+      icon: product.icon,
       productId: product.id,
       category: product.category,
       createdAt: serverTimestamp(),
@@ -255,6 +263,30 @@ export default function ShoppingPage() {
     });
 
     setSearch("");
+  }
+
+  async function saveFrequentProduct(item: ShoppingItem) {
+    if (!familyId) return;
+
+    const productName = item.productName || item.name;
+    const icon = item.icon || "🛒";
+    const category = item.category || "Другое";
+    const safeId = item.productId || makeSafeId(productName);
+
+    if (!safeId) return;
+
+    await setDoc(
+      doc(db, "families", familyId, "frequentProducts", safeId),
+      {
+        name: productName,
+        icon,
+        category,
+        productId: item.productId || safeId,
+        purchaseCount: increment(1),
+        lastBoughtAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
   }
 
   async function removeProduct(item: ShoppingItem) {
@@ -280,21 +312,17 @@ export default function ShoppingPage() {
     const alreadyInFridge = isProductInFridge(item.productId, item.name);
 
     if (!alreadyInFridge) {
-      const fridgeData: {
-        name: string;
-        createdAt: any;
-        productId?: string;
-      } = {
+      await addDoc(collection(db, "families", familyId, "fridge"), {
         name: item.name,
+        productId: item.productId || null,
+        productName: item.productName || item.name,
+        icon: item.icon || "🛒",
+        category: item.category || null,
         createdAt: serverTimestamp(),
-      };
-
-      if (item.productId) {
-        fridgeData.productId = item.productId;
-      }
-
-      await addDoc(collection(db, "families", familyId, "fridge"), fridgeData);
+      });
     }
+
+    await saveFrequentProduct(item);
 
     await deleteDoc(doc(db, "families", familyId, "shopping", item.id));
 
@@ -322,7 +350,11 @@ export default function ShoppingPage() {
     }
 
     if (items.length === 0) {
-      return <p className="text-sm text-slate-500">Ничего не найдено.</p>;
+      return (
+        <p className="text-sm text-slate-500">
+          Пока пусто. Купленные товары будут появляться здесь автоматически.
+        </p>
+      );
     }
 
     return (
@@ -331,10 +363,7 @@ export default function ShoppingPage() {
           const fullName = `${product.icon} ${product.name}`;
 
           const isAdded = shoppingList.some((item) => {
-            if (item.productId) {
-              return item.productId === product.id;
-            }
-
+            if (item.productId) return item.productId === product.id;
             return normalizeName(item.name) === normalizeName(fullName);
           });
 
@@ -357,9 +386,15 @@ export default function ShoppingPage() {
               <div className="text-2xl">{product.icon}</div>
               <div className="mt-1 line-clamp-2 text-xs">{product.name}</div>
 
+              {product.purchaseCount ? (
+                <div className="mt-1 text-[10px] text-slate-400">
+                  {product.purchaseCount} раз
+                </div>
+              ) : null}
+
               {existsInFridge && !isAdded && (
                 <div className="mt-1 text-[10px] font-medium">
-                  Есть в холодильнике
+                  Есть дома
                 </div>
               )}
             </motion.button>
@@ -403,7 +438,7 @@ export default function ShoppingPage() {
               <p className="text-sm text-slate-500">Загрузка...</p>
             ) : shoppingList.length === 0 ? (
               <p className="text-sm text-slate-500">
-                Пока список пуст. Добавь товары ниже.
+                Пока список пуст. Добавь товары через поиск или часто покупаемые.
               </p>
             ) : (
               <AnimatePresence mode="popLayout">
@@ -484,17 +519,18 @@ export default function ShoppingPage() {
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-semibold">
-                  {isSearching ? "Результаты поиска" : "Популярные товары"}
+                  {isSearching ? "Результаты поиска" : "⭐ Часто покупаемые"}
                 </h2>
+
                 <p className="mt-1 text-sm text-slate-500">
                   {isSearching
                     ? "Показываем до 24 найденных товаров"
-                    : "Показываем только 24 популярных товара"}
+                    : "Формируется автоматически после покупок"}
                 </p>
               </div>
 
               <span className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-500">
-                {isSearching ? searchProducts.length : popularProducts.length}
+                {isSearching ? searchProducts.length : frequentProducts.length}
               </span>
             </div>
 
@@ -505,7 +541,7 @@ export default function ShoppingPage() {
             ) : isSearching ? (
               <ProductGrid items={searchProducts} loading={loadingSearch} />
             ) : (
-              <ProductGrid items={popularProducts} loading={loadingProducts} />
+              <ProductGrid items={frequentProducts} loading={loadingFrequent} />
             )}
           </motion.div>
         </section>
