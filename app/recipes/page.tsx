@@ -279,7 +279,7 @@ export default function RecipesPage() {
         </div>
       )}
 
-      <BottomNav />
+      <BottomNav current="home" />
     </main>
   );
 }

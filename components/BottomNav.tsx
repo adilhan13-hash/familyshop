@@ -4,7 +4,14 @@ import Link from "next/link";
 import { motion } from "framer-motion";
 
 type BottomNavProps = {
-  current: "shopping" | "fridge" | "wish" | "ai" | "family" | "home";
+  current:
+    | "shopping"
+    | "fridge"
+    | "wish"
+    | "ai"
+    | "family"
+    | "home"
+    | "recipes";
 };
 
 export default function BottomNav({ current }: BottomNavProps) {
