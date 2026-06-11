@@ -32,11 +32,6 @@ const missingItems: Record<string, { name: string; icon: string; category: strin
     icon: "🥤",
     category: "Спортпит",
   },
-  ris_dlya_sushi: {
-    name: "Рис для суши",
-    icon: "🍚",
-    category: "Крупы и макароны",
-  },
   suhin_drojjei: {
     name: "Сухие дрожжи",
     icon: "🧫",
