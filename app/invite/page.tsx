@@ -1,15 +1,10 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
-import { useFamilyAuth } from "../../../components/AuthProvider";
-import { db } from "../../../lib/firebase";
-import {
-  arrayUnion,
-  doc,
-  getDoc,
-  updateDoc,
-} from "firebase/firestore";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useFamilyAuth } from "../../components/AuthProvider";
+import { db } from "../../lib/firebase";
+import { arrayUnion, doc, getDoc, updateDoc } from "firebase/firestore";
 
 type InviteData = {
   code: string;
@@ -22,11 +17,11 @@ type InviteData = {
 };
 
 export default function InvitePage() {
-  const params = useParams();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { user, appUser } = useFamilyAuth();
 
-  const code = String(params.code || "");
+  const code = searchParams.get("code") || "";
 
   const [invite, setInvite] = useState<InviteData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -35,6 +30,12 @@ export default function InvitePage() {
 
   useEffect(() => {
     async function loadInvite() {
+      if (!code) {
+        setInvite(null);
+        setLoading(false);
+        return;
+      }
+
       setLoading(true);
 
       const inviteRef = doc(db, "invites", code);
@@ -61,13 +62,11 @@ export default function InvitePage() {
       setLoading(false);
     }
 
-    if (code) {
-      loadInvite();
-    }
+    loadInvite();
   }, [code]);
 
   async function joinFamily() {
-    if (!user || !appUser || !invite) return;
+    if (!user || !appUser || !invite || !code) return;
 
     setJoining(true);
     setMessage("");
