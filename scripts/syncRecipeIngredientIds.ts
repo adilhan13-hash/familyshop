@@ -3,7 +3,7 @@ import { db } from "../lib/firebase";
 import recipes from "../data/recipes_all.json";
 import products from "../data/products_deep_clean_v2.json";
 
-const DRY_RUN = true; // сначала проверка. Для записи поменять на false
+const DRY_RUN = false; // сначала проверка. Для записи поменять на false
 
 type Product = {
   id: string;

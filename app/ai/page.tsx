@@ -62,7 +62,6 @@ type CookingRecipe = {
   category?: string;
   cookingTime?: string;
   score?: number;
-  createdAt?: unknown;
 };
 
 type MatchResult = {
@@ -220,7 +219,6 @@ export default function AiCookPage() {
               category: data.category,
               cookingTime: data.cookingTime,
               score: data.score,
-              createdAt: data.createdAt,
             });
           }
         });
@@ -420,7 +418,6 @@ export default function AiCookPage() {
       itemName: result.recipe.title,
     });
 
-    setMessage(`👨‍🍳 Будем готовить: ${result.recipe.title}`);
     setCookingAnimation(true);
     setShowCooking(true);
 
@@ -499,8 +496,14 @@ export default function AiCookPage() {
       });
     }
 
-    setMessage(`✅ Недостающее для "${result.recipe.title}" добавлено в покупки.`);
+    await startCooking(result);
+
+    setMessage(
+      `✅ Недостающее для "${result.recipe.title}" добавлено в покупки. Блюдо добавлено в “Будем готовить”.`
+    );
+
     setAddedAnimation(true);
+    setShowCooking(true);
 
     setTimeout(() => {
       setAddedAnimation(false);
@@ -719,17 +722,14 @@ export default function AiCookPage() {
                         key={recipe.id}
                         className="rounded-2xl bg-slate-50 p-4"
                       >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <div className="font-semibold">🍳 {recipe.title}</div>
-                            <div className="mt-1 text-sm text-slate-500">
-                              {recipe.category || "Рецепт"}
-                              {recipe.cookingTime ? ` · ${recipe.cookingTime}` : ""}
-                              {typeof recipe.score === "number"
-                                ? ` · ${recipe.score}%`
-                                : ""}
-                            </div>
-                          </div>
+                        <div className="font-semibold">🍳 {recipe.title}</div>
+
+                        <div className="mt-1 text-sm text-slate-500">
+                          {recipe.category || "Рецепт"}
+                          {recipe.cookingTime ? ` · ${recipe.cookingTime}` : ""}
+                          {typeof recipe.score === "number"
+                            ? ` · ${recipe.score}%`
+                            : ""}
                         </div>
 
                         <div className="mt-3 flex gap-2">
@@ -860,7 +860,7 @@ export default function AiCookPage() {
                       exit={{ opacity: 0, y: -8, scale: 0.98 }}
                       className="mb-4 rounded-2xl bg-green-100 p-3 text-center text-sm font-medium text-green-700"
                     >
-                      ✅ Добавлено в покупки
+                      ✅ Добавлено в покупки и в “Будем готовить”
                     </motion.div>
                   )}
 

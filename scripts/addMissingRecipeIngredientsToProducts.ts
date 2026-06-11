@@ -1,9 +1,12 @@
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { db } from "../lib/firebase";
 
-const missingItems: Record<string, { name: string; icon: string; category: string }> = {
+const missingItems: Record<
+  string,
+  { name: string; icon: string; category: string }
+> = {
   mayoran_susheniy: {
-    name: "Майоран сушеный",
+    name: "Майоран сушёный",
     icon: "🌿",
     category: "Специи",
   },
@@ -14,7 +17,7 @@ const missingItems: Record<string, { name: string; icon: string; category: strin
   },
   uksusnaya_essenciya_70: {
     name: "Уксусная эссенция 70%",
-    icon: "🍶",
+    icon: "🥫",
     category: "Соусы и добавки",
   },
   jir_kurdyuchniy: {
@@ -29,12 +32,12 @@ const missingItems: Record<string, { name: string; icon: string; category: strin
   },
   protein_shokoladniy: {
     name: "Шоколадный протеин",
-    icon: "🥤",
+    icon: "🍫",
     category: "Спортпит",
   },
   suhin_drojjei: {
     name: "Сухие дрожжи",
-    icon: "🧫",
+    icon: "🧁",
     category: "Тесто и выпечка",
   },
   ogurcov: {
@@ -48,7 +51,7 @@ const missingItems: Record<string, { name: string; icon: string; category: strin
     category: "Сухофрукты",
   },
   rozmarin_susheniy: {
-    name: "Розмарин сушеный",
+    name: "Розмарин сушёный",
     icon: "🌿",
     category: "Специи",
   },
@@ -59,7 +62,7 @@ const missingItems: Record<string, { name: string; icon: string; category: strin
   },
   ris_dlya_sushi: {
     name: "Рис для суши",
-    icon: "🍚",
+    icon: "🍣",
     category: "Крупы и макароны",
   },
   margarin_maslo_slivochnoe: {
@@ -74,7 +77,7 @@ const missingItems: Record<string, { name: string; icon: string; category: strin
   },
   tvorojnaya_massa: {
     name: "Творожная масса",
-    icon: "🥛",
+    icon: "🥣",
     category: "Молочные продукты",
   },
   tvorog_2: {
@@ -84,7 +87,7 @@ const missingItems: Record<string, { name: string; icon: string; category: strin
   },
   kardamon_molotiy: {
     name: "Кардамон молотый",
-    icon: "🧂",
+    icon: "🌰",
     category: "Специи",
   },
   griby_svejie: {
@@ -106,6 +109,11 @@ const missingItems: Record<string, { name: string; icon: string; category: strin
     name: "Говяжий язык",
     icon: "🥩",
     category: "Мясо",
+  },
+  shipovnik_susheniy: {
+    name: "Шиповник сушёный",
+    icon: "🌹",
+    category: "Сухофрукты",
   },
 };
 

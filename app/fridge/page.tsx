@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import BottomNav from "../../components/BottomNav";
 import { useFamilyAuth } from "../../components/AuthProvider";
@@ -23,11 +23,21 @@ type FridgeItem = {
   category?: string;
 };
 
+function normalizeText(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export default function FridgePage() {
   const { familyId, appUser } = useFamilyAuth();
 
   const [fridgeItems, setFridgeItems] = useState<FridgeItem[]>([]);
   const [loadingFridge, setLoadingFridge] = useState(true);
+  const [fridgeSearch, setFridgeSearch] = useState("");
 
   useEffect(() => {
     if (!familyId) return;
@@ -59,6 +69,26 @@ export default function FridgePage() {
 
     return () => unsubscribe();
   }, [familyId]);
+
+  const visibleFridgeItems = useMemo(() => {
+    const text = normalizeText(fridgeSearch);
+
+    if (text.length < 2) return fridgeItems;
+
+    return fridgeItems.filter((item) => {
+      const name = normalizeText(item.name);
+      const category = normalizeText(item.category || "");
+      const productId = normalizeText(item.productId || "");
+      const ingredientId = normalizeText(item.ingredientId || "");
+
+      return (
+        name.includes(text) ||
+        category.includes(text) ||
+        productId.includes(text) ||
+        ingredientId.includes(text)
+      );
+    });
+  }, [fridgeItems, fridgeSearch]);
 
   async function markAsFinished(item: FridgeItem) {
     if (!familyId) return;
@@ -118,7 +148,17 @@ export default function FridgePage() {
           </p>
         </motion.header>
 
-        <section className="px-5">
+        <section className="space-y-4 px-5">
+          <motion.input
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25 }}
+            value={fridgeSearch}
+            onChange={(event) => setFridgeSearch(event.target.value)}
+            placeholder="🔍 Найти в холодильнике от 2 букв"
+            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+          />
+
           <motion.div
             initial={{ opacity: 0, y: 14 }}
             animate={{ opacity: 1, y: 0 }}
@@ -126,7 +166,15 @@ export default function FridgePage() {
             className="rounded-3xl bg-white p-5 shadow-sm"
           >
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-xl font-semibold">Есть дома</h2>
+              <div>
+                <h2 className="text-xl font-semibold">Есть дома</h2>
+
+                {normalizeText(fridgeSearch).length >= 2 && (
+                  <p className="mt-1 text-sm text-slate-500">
+                    Найдено: {visibleFridgeItems.length} из {fridgeItems.length}
+                  </p>
+                )}
+              </div>
 
               <span className="rounded-full bg-blue-100 px-3 py-1 text-sm text-blue-700">
                 {fridgeItems.length}
@@ -139,10 +187,14 @@ export default function FridgePage() {
               <p className="text-sm text-slate-500">
                 Пока холодильник пуст. Купленные товары будут появляться здесь.
               </p>
+            ) : visibleFridgeItems.length === 0 ? (
+              <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">
+                Ничего не найдено. Попробуй другое название.
+              </p>
             ) : (
               <AnimatePresence mode="popLayout">
                 <div className="space-y-3">
-                  {fridgeItems.map((item) => (
+                  {visibleFridgeItems.map((item) => (
                     <motion.div
                       key={item.id}
                       layout
