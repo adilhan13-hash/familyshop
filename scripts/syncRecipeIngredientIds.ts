@@ -71,7 +71,6 @@ const manualMap: Record<string, string> = {
   luk: "luk-repchatyy",
   luka: "luk-repchatyy",
   luk_repchatiy: "luk-repchatyy",
-  luk_repchatiy: "luk-repchatyy",
   luk_repchatyy: "luk-repchatyy",
   chesnok: "chesnok",
   chesnoka: "chesnok",
