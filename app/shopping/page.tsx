@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import BottomNav from "../../components/BottomNav";
 import { useFamilyAuth } from "../../components/AuthProvider";
@@ -10,7 +10,6 @@ import {
   collection,
   deleteDoc,
   doc,
-  getDocs,
   increment,
   limit,
   onSnapshot,
@@ -18,7 +17,6 @@ import {
   query,
   serverTimestamp,
   setDoc,
-  where,
 } from "firebase/firestore";
 import { addActivity } from "../../lib/activity";
 
@@ -26,6 +24,7 @@ type ShoppingItem = {
   id: string;
   name: string;
   productId?: string;
+  ingredientId?: string;
   productName?: string;
   icon?: string;
   category?: string;
@@ -35,6 +34,7 @@ type FridgeItem = {
   id: string;
   name: string;
   productId?: string;
+  ingredientId?: string;
 };
 
 type Product = {
@@ -42,6 +42,8 @@ type Product = {
   icon: string;
   name: string;
   category: string;
+  ingredientId?: string;
+  search?: string[];
   purchaseCount?: number;
 };
 
@@ -50,16 +52,30 @@ export default function ShoppingPage() {
 
   const [shoppingList, setShoppingList] = useState<ShoppingItem[]>([]);
   const [fridgeList, setFridgeList] = useState<FridgeItem[]>([]);
+  const [favoriteProducts, setFavoriteProducts] = useState<Product[]>([]);
   const [frequentProducts, setFrequentProducts] = useState<Product[]>([]);
-  const [searchProducts, setSearchProducts] = useState<Product[]>([]);
+  const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState("");
 
   const [loadingShopping, setLoadingShopping] = useState(true);
+  const [loadingFavorites, setLoadingFavorites] = useState(true);
   const [loadingFrequent, setLoadingFrequent] = useState(true);
-  const [loadingSearch, setLoadingSearch] = useState(false);
+  const [loadingProducts, setLoadingProducts] = useState(true);
 
   function normalizeName(name: string) {
-    return name.trim().toLowerCase();
+    return name
+      .trim()
+      .toLowerCase()
+      .replace(/ё/g, "е")
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/\s+/g, " ");
+  }
+
+  function cleanProductName(value: string) {
+    return value
+      .replace(/^[^\p{L}\p{N}]+/u, "")
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
   function makeSafeId(value: string) {
@@ -77,8 +93,10 @@ export default function ShoppingPage() {
     return {
       id: document.id,
       icon: data.icon || "🛒",
-      name: data.name,
+      name: cleanProductName(data.name),
       category: data.category || "Другое",
+      ingredientId: data.ingredientId || document.id,
+      search: Array.isArray(data.search) ? data.search : [],
       purchaseCount: data.purchaseCount || 0,
     };
   }
@@ -99,6 +117,7 @@ export default function ShoppingPage() {
               id: document.id,
               name: data.name,
               productId: data.productId,
+              ingredientId: data.ingredientId,
               productName: data.productName,
               icon: data.icon,
               category: data.category,
@@ -130,11 +149,35 @@ export default function ShoppingPage() {
               id: document.id,
               name: data.name,
               productId: data.productId,
+              ingredientId: data.ingredientId,
             });
           }
         });
 
         setFridgeList(items);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [familyId]);
+
+  useEffect(() => {
+    if (!familyId) return;
+
+    const unsubscribe = onSnapshot(
+      collection(db, "families", familyId, "favoriteProducts"),
+      (snapshot) => {
+        const items: Product[] = [];
+
+        snapshot.forEach((document) => {
+          const product = productFromDoc(document);
+          if (product) items.push(product);
+        });
+
+        items.sort((a, b) => a.name.localeCompare(b.name, "ru"));
+
+        setFavoriteProducts(items);
+        setLoadingFavorites(false);
       }
     );
 
@@ -166,48 +209,63 @@ export default function ShoppingPage() {
   }, [familyId]);
 
   useEffect(() => {
-    const searchText = normalizeName(search);
+    const productsQuery = query(
+      collection(db, "products"),
+      orderBy("name"),
+      limit(3000)
+    );
 
-    if (searchText.length < 2) {
-      setSearchProducts([]);
-      setLoadingSearch(false);
-      return;
-    }
+    const unsubscribe = onSnapshot(productsQuery, (snapshot) => {
+      const items: Product[] = [];
 
-    const timeout = setTimeout(async () => {
-      try {
-        setLoadingSearch(true);
+      snapshot.forEach((document) => {
+        const product = productFromDoc(document);
+        if (product) items.push(product);
+      });
 
-        const productsQuery = query(
-          collection(db, "products"),
-          where("search", "array-contains", searchText),
-          limit(24)
+      setAllProducts(items);
+      setLoadingProducts(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const visibleSearchProducts = useMemo(() => {
+    const text = normalizeName(search);
+
+    if (text.length < 2) return [];
+
+    return allProducts
+      .filter((product) => {
+        const name = normalizeName(product.name);
+        const category = normalizeName(product.category || "");
+        const searchText = (product.search || [])
+          .map((item) => normalizeName(item))
+          .join(" ");
+
+        return (
+          name.includes(text) ||
+          category.includes(text) ||
+          searchText.includes(text)
         );
+      })
+      .slice(0, 24);
+  }, [allProducts, search]);
 
-        const snapshot = await getDocs(productsQuery);
+  function isFavorite(product: Product) {
+    return favoriteProducts.some((item) => item.id === product.id);
+  }
 
-        const items: Product[] = [];
-
-        snapshot.forEach((document) => {
-          const product = productFromDoc(document);
-          if (product) items.push(product);
-        });
-
-        items.sort((a, b) => a.name.localeCompare(b.name, "ru"));
-
-        setSearchProducts(items);
-      } catch (error) {
-        console.error("PRODUCT SEARCH ERROR", error);
-      } finally {
-        setLoadingSearch(false);
-      }
-    }, 400);
-
-    return () => clearTimeout(timeout);
-  }, [search]);
-
-  function isProductInFridge(productId?: string, name?: string) {
+  function isProductInFridge(
+    productId?: string,
+    name?: string,
+    ingredientId?: string
+  ) {
     return fridgeList.some((fridgeItem) => {
+      if (ingredientId && fridgeItem.ingredientId) {
+        return fridgeItem.ingredientId === ingredientId;
+      }
+
       if (productId && fridgeItem.productId) {
         return fridgeItem.productId === productId;
       }
@@ -220,19 +278,53 @@ export default function ShoppingPage() {
     });
   }
 
+  async function toggleFavorite(product: Product) {
+    if (!familyId) return;
+
+    const exists = isFavorite(product);
+    const cleanName = cleanProductName(product.name);
+    const ingredientId = product.ingredientId || product.id;
+
+    if (exists) {
+      await deleteDoc(
+        doc(db, "families", familyId, "favoriteProducts", product.id)
+      );
+
+      return;
+    }
+
+    await setDoc(
+      doc(db, "families", familyId, "favoriteProducts", product.id),
+      {
+        name: cleanName,
+        icon: product.icon || "🛒",
+        category: product.category || "Другое",
+        productId: product.id,
+        ingredientId,
+        search: product.search || [],
+        createdAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  }
+
   async function addProduct(product: Product) {
     if (!familyId) return;
 
-    const fullName = `${product.icon} ${product.name}`;
+    const cleanName = cleanProductName(product.name);
+    const fullName = `${product.icon} ${cleanName}`;
+    const ingredientId = product.ingredientId || product.id;
 
     const alreadyExists = shoppingList.some((item) => {
-      if (item.productId) return item.productId === product.id;
+      if (item.ingredientId && item.ingredientId === ingredientId) return true;
+      if (item.productId && item.productId === product.id) return true;
+
       return normalizeName(item.name) === normalizeName(fullName);
     });
 
     if (alreadyExists) return;
 
-    const existsInFridge = isProductInFridge(product.id, fullName);
+    const existsInFridge = isProductInFridge(product.id, fullName, ingredientId);
 
     if (existsInFridge) {
       const confirmed = window.confirm(
@@ -244,9 +336,10 @@ export default function ShoppingPage() {
 
     await addDoc(collection(db, "families", familyId, "shopping"), {
       name: fullName,
-      productName: product.name,
+      productName: cleanName,
       icon: product.icon,
       productId: product.id,
+      ingredientId,
       category: product.category,
       createdAt: serverTimestamp(),
     });
@@ -258,7 +351,7 @@ export default function ShoppingPage() {
       type: "shopping_add",
       title: "Добавил в покупки",
       message: fullName,
-      emoji: "🛒",
+      emoji: product.icon || "🛒",
       itemName: fullName,
     });
 
@@ -268,54 +361,41 @@ export default function ShoppingPage() {
   async function saveFrequentProduct(item: ShoppingItem) {
     if (!familyId) return;
 
-    const productName = item.productName || item.name;
-    const icon = item.icon || "🛒";
-    const category = item.category || "Другое";
-    const safeId = item.productId || makeSafeId(productName);
+    const productId = item.productId || makeSafeId(item.productName || item.name);
 
-    if (!safeId) return;
+    const cleanName = cleanProductName(
+      item.productName || item.name.replace(item.icon || "", "")
+    );
 
     await setDoc(
-      doc(db, "families", familyId, "frequentProducts", safeId),
+      doc(db, "families", familyId, "frequentProducts", productId),
       {
-        name: productName,
-        icon,
-        category,
-        productId: item.productId || safeId,
+        name: cleanName,
+        icon: item.icon || "🛒",
+        category: item.category || "Другое",
+        productId,
+        ingredientId: item.ingredientId || productId,
         purchaseCount: increment(1),
-        lastBoughtAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
       },
       { merge: true }
     );
   }
 
-  async function removeProduct(item: ShoppingItem) {
-    if (!familyId) return;
-
-    await deleteDoc(doc(db, "families", familyId, "shopping", item.id));
-
-    await addActivity({
-      familyId,
-      userId: appUser?.uid || "unknown",
-      userName: appUser?.displayName || "Без имени",
-      type: "shopping_remove",
-      title: "Убрал из покупок",
-      message: item.name,
-      emoji: "🗑️",
-      itemName: item.name,
-    });
-  }
-
   async function markAsBought(item: ShoppingItem) {
     if (!familyId) return;
 
-    const alreadyInFridge = isProductInFridge(item.productId, item.name);
+    const productId = item.productId || undefined;
+    const ingredientId = item.ingredientId || item.productId || undefined;
+
+    const alreadyInFridge = isProductInFridge(productId, item.name, ingredientId);
 
     if (!alreadyInFridge) {
       await addDoc(collection(db, "families", familyId, "fridge"), {
         name: item.name,
         productId: item.productId || null,
-        productName: item.productName || item.name,
+        ingredientId: ingredientId || null,
+        productName: item.productName || cleanProductName(item.name),
         icon: item.icon || "🛒",
         category: item.category || null,
         createdAt: serverTimestamp(),
@@ -338,73 +418,113 @@ export default function ShoppingPage() {
     });
   }
 
+  async function removeFromShopping(item: ShoppingItem) {
+    if (!familyId) return;
+
+    await deleteDoc(doc(db, "families", familyId, "shopping", item.id));
+
+    await addActivity({
+      familyId,
+      userId: appUser?.uid || "unknown",
+      userName: appUser?.displayName || "Без имени",
+      type: "shopping_remove",
+      title: "Убрал из покупок",
+      message: item.name,
+      emoji: "🗑️",
+      itemName: item.name,
+    });
+  }
+
   function ProductGrid({
     items,
     loading,
+    emptyText,
   }: {
     items: Product[];
     loading: boolean;
+    emptyText: string;
   }) {
     if (loading) {
       return <p className="text-sm text-slate-500">Загрузка товаров...</p>;
     }
 
     if (items.length === 0) {
-      return (
-        <p className="text-sm text-slate-500">
-          Пока пусто. Купленные товары будут появляться здесь автоматически.
-        </p>
-      );
+      return <p className="text-sm text-slate-500">{emptyText}</p>;
     }
 
     return (
       <div className="grid grid-cols-4 gap-3">
         {items.map((product) => {
-          const fullName = `${product.icon} ${product.name}`;
+          const cleanName = cleanProductName(product.name);
+          const fullName = `${product.icon} ${cleanName}`;
+          const ingredientId = product.ingredientId || product.id;
 
           const isAdded = shoppingList.some((item) => {
-            if (item.productId) return item.productId === product.id;
+            if (item.ingredientId && item.ingredientId === ingredientId) {
+              return true;
+            }
+
+            if (item.productId && item.productId === product.id) {
+              return true;
+            }
+
             return normalizeName(item.name) === normalizeName(fullName);
           });
 
-          const existsInFridge = isProductInFridge(product.id, fullName);
+          const existsInFridge = isProductInFridge(
+            product.id,
+            fullName,
+            ingredientId
+          );
+
+          const favorite = isFavorite(product);
 
           return (
-            <motion.button
-              key={product.id}
-              whileTap={{ scale: 0.92 }}
-              whileHover={{ scale: 1.04 }}
-              onClick={() => addProduct(product)}
-              className={`rounded-2xl p-3 text-center text-sm transition ${
-                isAdded
-                  ? "bg-green-100 text-green-700"
-                  : existsInFridge
-                  ? "bg-amber-100 text-amber-700"
-                  : "bg-slate-100 text-slate-900"
-              }`}
-            >
-              <div className="text-2xl">{product.icon}</div>
-              <div className="mt-1 line-clamp-2 text-xs">{product.name}</div>
+            <div key={product.id} className="relative">
+              <motion.button
+                whileTap={{ scale: 0.92 }}
+                whileHover={{ scale: 1.04 }}
+                onClick={() => addProduct(product)}
+                className={`min-h-[96px] w-full rounded-2xl p-3 text-center text-sm transition ${
+                  isAdded
+                    ? "bg-green-100 text-green-700"
+                    : existsInFridge
+                    ? "bg-amber-100 text-amber-700"
+                    : "bg-slate-100 text-slate-900"
+                }`}
+              >
+                <div className="text-2xl">{product.icon}</div>
+                <div className="mt-1 line-clamp-2 text-xs">{cleanName}</div>
 
-              {product.purchaseCount ? (
-                <div className="mt-1 text-[10px] text-slate-400">
-                  {product.purchaseCount} раз
-                </div>
-              ) : null}
+                {product.purchaseCount ? (
+                  <div className="mt-1 text-[10px] text-slate-400">
+                    {product.purchaseCount} раз
+                  </div>
+                ) : null}
 
-              {existsInFridge && !isAdded && (
-                <div className="mt-1 text-[10px] font-medium">
-                  Есть дома
-                </div>
-              )}
-            </motion.button>
+                {existsInFridge && !isAdded && (
+                  <div className="mt-1 text-[10px] font-medium">Есть дома</div>
+                )}
+              </motion.button>
+
+              <button
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggleFavorite(product);
+                }}
+                className="absolute right-1 top-1 rounded-full bg-white/90 px-1 text-lg shadow-sm"
+                aria-label="Добавить в избранное"
+              >
+                {favorite ? "⭐" : "☆"}
+              </button>
+            </div>
           );
         })}
       </div>
     );
   }
 
-  const isSearching = search.trim().length >= 2;
+  const isSearching = normalizeName(search).length >= 2;
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
@@ -438,7 +558,8 @@ export default function ShoppingPage() {
               <p className="text-sm text-slate-500">Загрузка...</p>
             ) : shoppingList.length === 0 ? (
               <p className="text-sm text-slate-500">
-                Пока список пуст. Добавь товары через поиск или часто покупаемые.
+                Пока список пуст. Добавь товары через поиск, избранные или часто
+                покупаемые.
               </p>
             ) : (
               <AnimatePresence mode="popLayout">
@@ -446,7 +567,8 @@ export default function ShoppingPage() {
                   {shoppingList.map((item) => {
                     const existsInFridge = isProductInFridge(
                       item.productId,
-                      item.name
+                      item.name,
+                      item.ingredientId
                     );
 
                     return (
@@ -457,21 +579,27 @@ export default function ShoppingPage() {
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         exit={{ opacity: 0, y: -15, scale: 0.98 }}
                         transition={{ duration: 0.2 }}
-                        className="rounded-2xl bg-slate-50 px-4 py-3"
+                        className={`rounded-2xl px-4 py-3 ${
+                          existsInFridge ? "bg-amber-50" : "bg-slate-50"
+                        }`}
                       >
-                        <div className="mb-3 flex items-start gap-3">
-                          <span className="mt-1 h-5 w-5 rounded-full border border-slate-300" />
+                        <div className="mb-3 flex items-center gap-2 font-medium">
+                          <span
+                            className={`h-4 w-4 rounded-full border ${
+                              existsInFridge
+                                ? "border-amber-400 bg-amber-100"
+                                : "border-slate-300"
+                            }`}
+                          />
 
-                          <div>
-                            <span className="font-medium">{item.name}</span>
-
-                            {existsInFridge && (
-                              <div className="mt-1 text-xs font-medium text-amber-600">
-                                ⚠️ Уже есть в холодильнике
-                              </div>
-                            )}
-                          </div>
+                          <span>{item.name}</span>
                         </div>
+
+                        {existsInFridge && (
+                          <p className="mb-3 text-xs text-amber-700">
+                            Уже есть в холодильнике
+                          </p>
+                        )}
 
                         <div className="flex gap-2">
                           <motion.button
@@ -486,7 +614,7 @@ export default function ShoppingPage() {
                           <motion.button
                             whileTap={{ scale: 0.95 }}
                             whileHover={{ scale: 1.02 }}
-                            onClick={() => removeProduct(item)}
+                            onClick={() => removeFromShopping(item)}
                             className="flex-1 rounded-xl bg-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
                           >
                             Убрать
@@ -507,42 +635,87 @@ export default function ShoppingPage() {
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
-            placeholder="🔍 Поиск товара"
+            placeholder="🔍 Найти товар от 2 букв"
           />
+
+          {isSearching && (
+            <motion.div
+              initial={{ opacity: 0, y: 14 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+              className="rounded-3xl bg-white p-5 shadow-sm"
+            >
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <h2 className="text-lg font-semibold">Результаты поиска</h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Поиск работает с 2 символов
+                  </p>
+                </div>
+
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-500">
+                  {visibleSearchProducts.length}
+                </span>
+              </div>
+
+              <ProductGrid
+                items={visibleSearchProducts}
+                loading={loadingProducts}
+                emptyText="Ничего не найдено."
+              />
+            </motion.div>
+          )}
 
           <motion.div
             initial={{ opacity: 0, y: 14 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.25, delay: 0.1 }}
+            transition={{ duration: 0.2 }}
             className="rounded-3xl bg-white p-5 shadow-sm"
           >
             <div className="mb-4 flex items-center justify-between">
               <div>
-                <h2 className="text-lg font-semibold">
-                  {isSearching ? "Результаты поиска" : "⭐ Часто покупаемые"}
-                </h2>
-
+                <h2 className="text-lg font-semibold">⭐ Избранные</h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  {isSearching
-                    ? "Показываем до 24 найденных товаров"
-                    : "Формируется автоматически после покупок"}
+                  Товары, которые семья отметила звездой
+                </p>
+              </div>
+
+              <span className="rounded-full bg-yellow-100 px-3 py-1 text-sm text-yellow-700">
+                {favoriteProducts.length}
+              </span>
+            </div>
+
+            <ProductGrid
+              items={favoriteProducts}
+              loading={loadingFavorites}
+              emptyText="Пока нет избранных. Нажми ☆ на товаре."
+            />
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2 }}
+            className="rounded-3xl bg-white p-5 shadow-sm"
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold">🔁 Часто покупаемые</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Появляются автоматически после покупок
                 </p>
               </div>
 
               <span className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-500">
-                {isSearching ? searchProducts.length : frequentProducts.length}
+                {frequentProducts.length}
               </span>
             </div>
 
-            {search.trim().length > 0 && search.trim().length < 2 ? (
-              <p className="text-sm text-slate-500">
-                Введи минимум 2 буквы для поиска.
-              </p>
-            ) : isSearching ? (
-              <ProductGrid items={searchProducts} loading={loadingSearch} />
-            ) : (
-              <ProductGrid items={frequentProducts} loading={loadingFrequent} />
-            )}
+            <ProductGrid
+              items={frequentProducts}
+              loading={loadingFrequent}
+              emptyText="Пока пусто. Купленные товары будут появляться здесь автоматически."
+            />
           </motion.div>
         </section>
 

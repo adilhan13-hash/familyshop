@@ -1,22 +1,24 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import BottomNav from "../../components/BottomNav";
 import { useFamilyAuth } from "../../components/AuthProvider";
 import { db } from "../../lib/firebase";
 import {
   addDoc,
   collection,
-  endAt,
+  deleteDoc,
+  doc,
   getDocs,
   limit,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
+  setDoc,
   startAt,
+  endAt,
   where,
 } from "firebase/firestore";
 import { addActivity } from "../../lib/activity";
@@ -28,6 +30,15 @@ type FridgeItem = {
   ingredientId?: string;
 };
 
+type Product = {
+  id: string;
+  icon: string;
+  name: string;
+  category?: string;
+  ingredientId?: string;
+  search?: string[];
+};
+
 type Recipe = {
   id: string;
   title: string;
@@ -36,15 +47,12 @@ type Recipe = {
   difficulty?: string;
   cookingTime?: number;
   cookingTimeText?: string;
+  time?: string;
   description?: string;
   ingredientIds?: string[];
   optionalIngredientIds?: string[];
-  ingredientNames?: Record<string, string>;
-  ingredients?: string[];
   steps?: string[];
   searchTitle?: string;
-  searchText?: string;
-  aiCandidate?: boolean;
 };
 
 type MatchResult = {
@@ -68,14 +76,18 @@ export default function AiCookPage() {
   const { familyId, appUser } = useFamilyAuth();
 
   const [fridgeItems, setFridgeItems] = useState<FridgeItem[]>([]);
-  const [suggestedRecipes, setSuggestedRecipes] = useState<Recipe[]>([]);
-  const [searchRecipes, setSearchRecipes] = useState<Recipe[]>([]);
-  const [selectedRecipe, setSelectedRecipe] = useState<MatchResult | null>(null);
+  const [productsMap, setProductsMap] = useState<Record<string, Product>>({});
   const [search, setSearch] = useState("");
-  const [isFridgeOpen, setIsFridgeOpen] = useState(false);
+  const [searchRecipes, setSearchRecipes] = useState<Recipe[]>([]);
+  const [suggestedRecipes, setSuggestedRecipes] = useState<Recipe[]>([]);
+  const [favoriteRecipes, setFavoriteRecipes] = useState<Recipe[]>([]);
+  const [selectedRecipe, setSelectedRecipe] = useState<MatchResult | null>(null);
+
   const [loadingFridge, setLoadingFridge] = useState(true);
-  const [loadingSuggestions, setLoadingSuggestions] = useState(true);
+  const [loadingProducts, setLoadingProducts] = useState(true);
   const [loadingSearch, setLoadingSearch] = useState(false);
+  const [loadingSuggested, setLoadingSuggested] = useState(false);
+  const [loadingFavorites, setLoadingFavorites] = useState(true);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -108,17 +120,88 @@ export default function AiCookPage() {
   }, [familyId]);
 
   useEffect(() => {
-    async function loadCandidateRecipes() {
-      try {
-        setLoadingSuggestions(true);
+    const productsQuery = query(
+      collection(db, "products"),
+      orderBy("name"),
+      limit(3000)
+    );
 
-        const recipesQuery = query(
+    const unsubscribe = onSnapshot(productsQuery, (snapshot) => {
+      const map: Record<string, Product> = {};
+
+      snapshot.forEach((document) => {
+        const data = document.data();
+
+        if (data.name) {
+          map[document.id] = {
+            id: document.id,
+            icon: data.icon || "🛒",
+            name: data.name,
+            category: data.category,
+            ingredientId: data.ingredientId || document.id,
+            search: Array.isArray(data.search) ? data.search : [],
+          };
+        }
+      });
+
+      setProductsMap(map);
+      setLoadingProducts(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!familyId) return;
+
+    const unsubscribe = onSnapshot(
+      collection(db, "families", familyId, "favoriteRecipes"),
+      (snapshot) => {
+        const items: Recipe[] = [];
+
+        snapshot.forEach((document) => {
+          const data = document.data();
+
+          if (data.title) {
+            items.push({
+              id: document.id,
+              ...(data as Omit<Recipe, "id">),
+            });
+          }
+        });
+
+        setFavoriteRecipes(items);
+        setLoadingFavorites(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [familyId]);
+
+  const fridgeIngredientIds = useMemo(() => {
+    const ids = fridgeItems
+      .map((item) => item.ingredientId || item.productId)
+      .filter(Boolean) as string[];
+
+    return Array.from(new Set(ids));
+  }, [fridgeItems]);
+
+  useEffect(() => {
+    async function loadSuggestedRecipes() {
+      setSuggestedRecipes([]);
+
+      if (fridgeIngredientIds.length === 0) return;
+
+      setLoadingSuggested(true);
+
+      try {
+        const q = query(
           collection(db, "recipes"),
-          where("aiCandidate", "==", true),
-          limit(50)
+          where("ingredientIds", "array-contains-any", fridgeIngredientIds.slice(0, 30)),
+          limit(120)
         );
 
-        const snapshot = await getDocs(recipesQuery);
+        const snapshot = await getDocs(q);
 
         const items: Recipe[] = snapshot.docs.map((document) => ({
           id: document.id,
@@ -126,39 +209,34 @@ export default function AiCookPage() {
         }));
 
         setSuggestedRecipes(items);
-      } catch (error) {
-        console.error("AI CANDIDATE RECIPES LOAD ERROR", error);
       } finally {
-        setLoadingSuggestions(false);
+        setLoadingSuggested(false);
       }
     }
 
-    loadCandidateRecipes();
-  }, []);
+    loadSuggestedRecipes();
+  }, [fridgeIngredientIds.join("|")]);
 
   useEffect(() => {
-    const text = normalizeText(search);
+    async function searchRecipesFromBook() {
+      const text = normalizeText(search);
 
-    setSearchRecipes([]);
+      setSearchRecipes([]);
 
-    if (text.length < 2) {
-      setLoadingSearch(false);
-      return;
-    }
+      if (text.length < 2) return;
 
-    const timer = setTimeout(async () => {
+      setLoadingSearch(true);
+
       try {
-        setLoadingSearch(true);
-
-        const recipesQuery = query(
+        const q = query(
           collection(db, "recipes"),
           orderBy("searchTitle"),
           startAt(text),
           endAt(text + "\uf8ff"),
-          limit(20)
+          limit(40)
         );
 
-        const snapshot = await getDocs(recipesQuery);
+        const snapshot = await getDocs(q);
 
         const items: Recipe[] = snapshot.docs.map((document) => ({
           id: document.id,
@@ -166,76 +244,26 @@ export default function AiCookPage() {
         }));
 
         setSearchRecipes(items);
-      } catch (error) {
-        console.error("AI SEARCH RECIPES ERROR", error);
       } finally {
         setLoadingSearch(false);
       }
-    }, 450);
+    }
+
+    const timer = setTimeout(searchRecipesFromBook, 350);
 
     return () => clearTimeout(timer);
   }, [search]);
 
-  const fridgeIngredientIds = useMemo(() => {
-    const ids = fridgeItems
-      .map((item) => item.ingredientId)
-      .filter(Boolean) as string[];
-
-    return Array.from(new Set(ids));
-  }, [fridgeItems]);
-
-  const fridgeNames = useMemo(() => {
-    return fridgeItems.map((item) => normalizeText(item.name));
-  }, [fridgeItems]);
-
-  function getRecipeIngredientIds(recipe: Recipe) {
-    if (recipe.ingredientIds && recipe.ingredientIds.length > 0) {
-      return Array.from(new Set(recipe.ingredientIds));
-    }
-
-    if (recipe.ingredients && recipe.ingredients.length > 0) {
-      return recipe.ingredients.map((name) => normalizeText(name));
-    }
-
-    return [];
-  }
-
-  function getIngredientLabel(recipe: Recipe, id: string) {
-    if (recipe.ingredientNames?.[id]) {
-      return recipe.ingredientNames[id];
-    }
-
-    if (recipe.ingredients?.length) {
-      const found = recipe.ingredients.find(
-        (name) => normalizeText(name) === normalizeText(id)
-      );
-
-      if (found) return found;
-    }
-
-    return id;
-  }
-
   function buildMatch(recipe: Recipe): MatchResult {
-    const allIds = getRecipeIngredientIds(recipe);
+    const fridgeSet = new Set(fridgeIngredientIds);
+    const allIds = Array.from(new Set(recipe.ingredientIds || []));
     const optionalIds = new Set(recipe.optionalIngredientIds || []);
 
     const requiredIds = allIds.filter((id) => !optionalIds.has(id));
     const idsForScore = requiredIds.length > 0 ? requiredIds : allIds;
 
-    const fridgeIdSet = new Set(fridgeIngredientIds);
-
-    const haveIds = idsForScore.filter((id) => {
-      if (fridgeIdSet.has(id)) return true;
-
-      const label = normalizeText(getIngredientLabel(recipe, id));
-
-      return fridgeNames.some(
-        (fridgeName) => fridgeName.includes(label) || label.includes(fridgeName)
-      );
-    });
-
-    const missingIds = idsForScore.filter((id) => !haveIds.includes(id));
+    const haveIds = idsForScore.filter((id) => fridgeSet.has(id));
+    const missingIds = idsForScore.filter((id) => !fridgeSet.has(id));
 
     const score =
       idsForScore.length === 0
@@ -259,35 +287,75 @@ export default function AiCookPage() {
         if (b.score !== a.score) return b.score - a.score;
         return a.missingIds.length - b.missingIds.length;
       });
-  }, [suggestedRecipes, fridgeIngredientIds, fridgeNames]);
+  }, [suggestedRecipes, fridgeIngredientIds]);
 
   const searchResults = useMemo(() => {
-    return searchRecipes
-      .map(buildMatch)
-      .sort((a, b) => {
-        if (b.score !== a.score) return b.score - a.score;
-        return a.missingIds.length - b.missingIds.length;
-      });
-  }, [searchRecipes, fridgeIngredientIds, fridgeNames]);
+    return searchRecipes.map(buildMatch);
+  }, [searchRecipes, fridgeIngredientIds]);
+
+  const favoriteResults = useMemo(() => {
+    return favoriteRecipes.map(buildMatch);
+  }, [favoriteRecipes, fridgeIngredientIds]);
+
+  function getProductLabel(id: string) {
+    const product = productsMap[id];
+
+    if (!product) return id;
+
+    return `${product.icon || "🛒"} ${product.name}`;
+  }
 
   function getRecipeTime(recipe: Recipe) {
     if (recipe.cookingTimeText) return recipe.cookingTimeText;
+    if (recipe.time) return recipe.time;
     if (recipe.cookingTime) return `${recipe.cookingTime} мин`;
     return "";
+  }
+
+  function isFavoriteRecipe(recipeId: string) {
+    return favoriteRecipes.some((recipe) => recipe.id === recipeId);
+  }
+
+  async function toggleFavoriteRecipe(recipe: Recipe) {
+    if (!familyId) return;
+
+    if (isFavoriteRecipe(recipe.id)) {
+      await deleteDoc(
+        doc(db, "families", familyId, "favoriteRecipes", recipe.id)
+      );
+      return;
+    }
+
+    await setDoc(
+      doc(db, "families", familyId, "favoriteRecipes", recipe.id),
+      {
+        ...recipe,
+        createdAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
   }
 
   async function addMissingToShopping(result: MatchResult) {
     if (!familyId) return;
 
     for (const ingredientId of result.missingIds) {
-      const name = getIngredientLabel(result.recipe, ingredientId);
+      const product = productsMap[ingredientId];
+
+      const name = product
+        ? `${product.icon || "🛒"} ${product.name}`
+        : ingredientId;
 
       await addDoc(collection(db, "families", familyId, "shopping"), {
         name,
+        productName: product?.name || ingredientId,
+        icon: product?.icon || "🛒",
+        productId: ingredientId,
         ingredientId,
-        createdAt: serverTimestamp(),
+        category: product?.category || "Другое",
         source: "AI Cook",
         recipeId: result.recipe.id,
+        createdAt: serverTimestamp(),
       });
 
       await addActivity({
@@ -302,138 +370,110 @@ export default function AiCookPage() {
       });
     }
 
-    setMessage(`Недостающие продукты для "${result.recipe.title}" добавлены в покупки.`);
+    setMessage(`Недостающее для "${result.recipe.title}" добавлено в покупки.`);
   }
 
   function RecipeCard({ result }: { result: MatchResult }) {
     const recipe = result.recipe;
+    const favorite = isFavoriteRecipe(recipe.id);
 
     return (
-      <motion.button
-        layout
-        initial={{ opacity: 0, y: 12 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -12 }}
-        whileTap={{ scale: 0.98 }}
-        onClick={() => {
-          setSelectedRecipe(result);
-          setMessage("");
-        }}
-        className="w-full rounded-3xl bg-white p-4 text-left shadow-sm"
-      >
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h3 className="text-lg font-semibold text-slate-900">
-              🍳 {recipe.title}
-            </h3>
+      <div className="relative">
+        <motion.button
+          layout
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          whileTap={{ scale: 0.98 }}
+          onClick={() => {
+            setSelectedRecipe(result);
+            setMessage("");
+          }}
+          className="w-full rounded-3xl bg-white p-4 text-left shadow-sm"
+        >
+          <div className="flex items-start justify-between gap-3 pr-7">
+            <div>
+              <h3 className="text-lg font-semibold text-slate-900">
+                🍳 {recipe.title}
+              </h3>
 
-            <p className="mt-1 text-sm text-slate-500">
-              {recipe.category || "Рецепт"}
-              {getRecipeTime(recipe) ? ` · ${getRecipeTime(recipe)}` : ""}
-            </p>
+              <p className="mt-1 text-sm text-slate-500">
+                {recipe.category || "Рецепт"}
+                {getRecipeTime(recipe) ? ` · ${getRecipeTime(recipe)}` : ""}
+              </p>
+            </div>
+
+            <div
+              className={`rounded-full px-3 py-1 text-sm font-semibold ${
+                result.score === 100
+                  ? "bg-green-100 text-green-700"
+                  : result.score >= 70
+                  ? "bg-orange-100 text-orange-700"
+                  : "bg-slate-100 text-slate-600"
+              }`}
+            >
+              {result.score}%
+            </div>
           </div>
 
-          <div
-            className={`rounded-full px-3 py-1 text-sm font-semibold ${
-              result.score === 100
-                ? "bg-green-100 text-green-700"
-                : result.score >= 70
-                ? "bg-orange-100 text-orange-700"
-                : "bg-slate-100 text-slate-600"
-            }`}
-          >
-            {result.score}%
+          <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
+            <div
+              className={`h-full rounded-full ${
+                result.score === 100
+                  ? "bg-green-500"
+                  : result.score >= 70
+                  ? "bg-orange-400"
+                  : "bg-slate-400"
+              }`}
+              style={{ width: `${result.score}%` }}
+            />
           </div>
-        </div>
 
-        <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
-          <div
-            className={`h-full rounded-full ${
-              result.score === 100
-                ? "bg-green-500"
-                : result.score >= 70
-                ? "bg-orange-400"
-                : "bg-slate-400"
-            }`}
-            style={{ width: `${result.score}%` }}
-          />
-        </div>
+          <p className="mt-3 text-sm text-slate-500">
+            Есть {result.haveIds.length} из {result.total}
+            {result.missingIds.length > 0
+              ? ` · не хватает ${result.missingIds.length}`
+              : " · можно готовить"}
+          </p>
+        </motion.button>
 
-        <p className="mt-3 text-sm text-slate-500">
-          Есть {result.haveIds.length} из {result.total}
-          {result.missingIds.length > 0
-            ? ` · не хватает ${result.missingIds.length}`
-            : " · можно готовить"}
-        </p>
-      </motion.button>
+        <button
+          onClick={() => toggleFavoriteRecipe(recipe)}
+          className="absolute right-3 top-3 rounded-full bg-white/90 px-1 text-lg shadow-sm"
+        >
+          {favorite ? "⭐" : "☆"}
+        </button>
+      </div>
     );
   }
 
-  const isSearchMode = normalizeText(search).length >= 2;
+  const isSearching = normalizeText(search).length >= 2;
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
       <div className="mx-auto min-h-screen max-w-md bg-slate-50 pb-24">
-        <header className="px-5 pt-8 pb-4">
+        <motion.header
+          initial={{ opacity: 0, y: -12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.25 }}
+          className="px-5 pt-8 pb-4"
+        >
           <p className="text-sm text-slate-500">FamilyShop</p>
           <h1 className="text-3xl font-bold">AI Cook 🤖</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Подбор рецептов из холодильника без лишней нагрузки на базу
+            Поиск рецептов и блюда из холодильника
           </p>
-        </header>
+        </motion.header>
 
-        <section className="space-y-4 px-5">
-          <input
+        <section className="space-y-5 px-5">
+          <motion.input
+            initial={{ opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25 }}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="🔍 Поиск рецепта от 2 букв"
-            className="w-full rounded-3xl border border-slate-200 bg-white px-5 py-4 text-base outline-none transition focus:border-blue-400"
+            placeholder="🔍 Найти рецепт от 2 букв"
+            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
           />
-
-          <div className="grid grid-cols-2 gap-3">
-            <Link href="/recipes" className="rounded-3xl bg-white p-4 shadow-sm">
-              <div className="text-2xl">📖</div>
-              <div className="mt-2 font-semibold">Книга рецептов</div>
-              <div className="mt-1 text-xs text-slate-500">Поиск отдельно</div>
-            </Link>
-
-            <button
-              onClick={() => setIsFridgeOpen((prev) => !prev)}
-              className="rounded-3xl bg-white p-4 text-left shadow-sm"
-            >
-              <div className="text-2xl">🥛</div>
-              <div className="mt-2 font-semibold">Есть дома</div>
-              <div className="mt-1 text-xs text-slate-500">
-                {loadingFridge ? "Загрузка..." : `${fridgeItems.length} товаров`}
-              </div>
-            </button>
-          </div>
-
-          <AnimatePresence>
-            {isFridgeOpen && (
-              <motion.div
-                initial={{ opacity: 0, height: 0, y: -8 }}
-                animate={{ opacity: 1, height: "auto", y: 0 }}
-                exit={{ opacity: 0, height: 0, y: -8 }}
-                className="overflow-hidden rounded-3xl bg-white p-4 shadow-sm"
-              >
-                {fridgeItems.length === 0 ? (
-                  <p className="text-sm text-slate-500">Холодильник пуст.</p>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {fridgeItems.map((item) => (
-                      <span
-                        key={item.id}
-                        className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-700"
-                      >
-                        {item.name}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
 
           {message && (
             <div className="rounded-3xl bg-green-100 px-4 py-3 text-sm text-green-700">
@@ -441,68 +481,128 @@ export default function AiCookPage() {
             </div>
           )}
 
-          {isSearchMode ? (
-            <div>
-              <h2 className="mb-3 text-xl font-bold">🔍 Результаты поиска</h2>
+          {isSearching && (
+            <motion.div
+              initial={{ opacity: 0, y: 14 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="rounded-3xl bg-slate-50"
+            >
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-xl font-bold">🔍 Результаты поиска</h2>
+                <span className="rounded-full bg-slate-200 px-3 py-1 text-sm">
+                  {searchResults.length}
+                </span>
+              </div>
 
               {loadingSearch ? (
-                <div className="rounded-3xl bg-white p-5 text-sm text-slate-500 shadow-sm">
+                <p className="rounded-3xl bg-white p-5 text-sm text-slate-500 shadow-sm">
                   Ищу рецепты...
-                </div>
+                </p>
               ) : searchResults.length === 0 ? (
-                <div className="rounded-3xl bg-white p-5 text-center shadow-sm">
-                  <div className="text-4xl">🤔</div>
-                  <h3 className="mt-3 text-lg font-semibold">Ничего не найдено</h3>
-                  <p className="mt-2 text-sm text-slate-500">
-                    Попробуй другое название блюда.
-                  </p>
-                </div>
+                <p className="rounded-3xl bg-white p-5 text-sm text-slate-500 shadow-sm">
+                  Ничего не найдено.
+                </p>
               ) : (
                 <div className="space-y-3">
-                  <AnimatePresence>
-                    {searchResults.map((result) => (
-                      <RecipeCard key={result.recipe.id} result={result} />
-                    ))}
-                  </AnimatePresence>
+                  {searchResults.map((result) => (
+                    <RecipeCard key={result.recipe.id} result={result} />
+                  ))}
                 </div>
               )}
-            </div>
-          ) : (
-            <div>
-              <h2 className="mb-3 text-xl font-bold">🍳 Что можно приготовить</h2>
+            </motion.div>
+          )}
 
-              {fridgeItems.length === 0 && !loadingFridge ? (
-                <div className="rounded-3xl bg-white p-5 text-center shadow-sm">
-                  <div className="text-4xl">🥛</div>
-                  <h3 className="mt-3 text-lg font-semibold">Холодильник пуст</h3>
-                  <p className="mt-2 text-sm text-slate-500">
-                    Купленные товары будут появляться в холодильнике.
+          {!isSearching && (
+            <>
+              <motion.div
+                initial={{ opacity: 0, y: 14 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="rounded-3xl bg-white p-5 shadow-sm"
+              >
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-xl font-semibold">🥛 Есть дома</h2>
+
+                  <span className="rounded-full bg-blue-100 px-3 py-1 text-sm text-blue-700">
+                    {fridgeIngredientIds.length}
+                  </span>
+                </div>
+
+                {loadingFridge || loadingProducts ? (
+                  <p className="text-sm text-slate-500">Загрузка...</p>
+                ) : fridgeIngredientIds.length === 0 ? (
+                  <p className="text-sm text-slate-500">
+                    Добавь продукты в холодильник, и AI подберёт блюда.
                   </p>
-                  <Link
-                    href="/fridge"
-                    className="mt-4 inline-block rounded-2xl bg-black px-4 py-3 text-sm font-medium text-white"
-                  >
-                    Перейти в холодильник
-                  </Link>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {fridgeIngredientIds.map((id) => (
+                      <span
+                        key={id}
+                        className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-700"
+                      >
+                        {getProductLabel(id)}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </motion.div>
+
+              <motion.div
+                initial={{ opacity: 0, y: 14 }}
+                animate={{ opacity: 1, y: 0 }}
+              >
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-xl font-bold">🥘 Что можно приготовить</h2>
+                  <span className="rounded-full bg-slate-200 px-3 py-1 text-sm">
+                    {suggestedResults.length}
+                  </span>
                 </div>
-              ) : loadingSuggestions ? (
-                <div className="rounded-3xl bg-white p-5 text-sm text-slate-500 shadow-sm">
-                  Подбираю 50 рецептов...
-                </div>
-              ) : suggestedResults.length === 0 ? (
-                <div className="rounded-3xl bg-white p-5 text-sm text-slate-500 shadow-sm">
-                  Пока нет подходящих рецептов.
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <AnimatePresence>
-                    {suggestedResults.slice(0, 50).map((result) => (
+
+                {loadingSuggested ? (
+                  <p className="rounded-3xl bg-white p-5 text-sm text-slate-500 shadow-sm">
+                    Подбираю рецепты...
+                  </p>
+                ) : suggestedResults.length === 0 ? (
+                  <p className="rounded-3xl bg-white p-5 text-sm text-slate-500 shadow-sm">
+                    Пока нет подходящих рецептов.
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {suggestedResults.slice(0, 40).map((result) => (
                       <RecipeCard key={result.recipe.id} result={result} />
                     ))}
-                  </AnimatePresence>
+                  </div>
+                )}
+              </motion.div>
+
+              <motion.div
+                initial={{ opacity: 0, y: 14 }}
+                animate={{ opacity: 1, y: 0 }}
+              >
+                <div className="mb-3 flex items-center justify-between">
+                  <h2 className="text-xl font-bold">⭐ Избранные рецепты</h2>
+                  <span className="rounded-full bg-yellow-100 px-3 py-1 text-sm text-yellow-700">
+                    {favoriteResults.length}
+                  </span>
                 </div>
-              )}
-            </div>
+
+                {loadingFavorites ? (
+                  <p className="rounded-3xl bg-white p-5 text-sm text-slate-500 shadow-sm">
+                    Загрузка...
+                  </p>
+                ) : favoriteResults.length === 0 ? (
+                  <p className="rounded-3xl bg-white p-5 text-sm text-slate-500 shadow-sm">
+                    Пока нет избранных рецептов. Нажми ☆ на рецепте.
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {favoriteResults.map((result) => (
+                      <RecipeCard key={result.recipe.id} result={result} />
+                    ))}
+                  </div>
+                )}
+              </motion.div>
+            </>
           )}
         </section>
 
@@ -544,7 +644,8 @@ export default function AiCookPage() {
                     </div>
 
                     <div className="text-sm text-slate-500">
-                      Есть {selectedRecipe.haveIds.length} из {selectedRecipe.total}
+                      Есть {selectedRecipe.haveIds.length} из{" "}
+                      {selectedRecipe.total}
                     </div>
                   </div>
 
@@ -575,7 +676,7 @@ export default function AiCookPage() {
                         key={id}
                         className="rounded-2xl bg-green-50 px-4 py-2 text-sm text-green-700"
                       >
-                        ✓ {getIngredientLabel(selectedRecipe.recipe, id)}
+                        ✓ {getProductLabel(id)}
                       </div>
                     ))
                   )}
@@ -591,7 +692,7 @@ export default function AiCookPage() {
                           key={id}
                           className="rounded-2xl bg-orange-50 px-4 py-2 text-sm text-orange-700"
                         >
-                          + {getIngredientLabel(selectedRecipe.recipe, id)}
+                          + {getProductLabel(id)}
                         </div>
                       ))}
                     </div>
