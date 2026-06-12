@@ -37,6 +37,7 @@ type Product = {
   category?: string;
   ingredientId?: string;
   search?: string[];
+  aliases?: string[];
 };
 
 type Recipe = {
@@ -79,6 +80,24 @@ function normalizeText(value: string) {
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function addProductKey(
+  map: Record<string, Product>,
+  key: unknown,
+  product: Product
+) {
+  if (typeof key !== "string") return;
+
+  const rawKey = key.trim();
+  if (!rawKey) return;
+
+  map[rawKey] = product;
+
+  const normalizedKey = normalizeText(rawKey);
+  if (normalizedKey) {
+    map[normalizedKey] = product;
+  }
 }
 
 export default function AiCookPage() {
@@ -154,16 +173,25 @@ export default function AiCookPage() {
       snapshot.forEach((document) => {
         const data = document.data();
 
-        if (data.name) {
-          map[document.id] = {
-            id: document.id,
-            icon: data.icon || "🛒",
-            name: data.name,
-            category: data.category,
-            ingredientId: data.ingredientId || document.id,
-            search: Array.isArray(data.search) ? data.search : [],
-          };
-        }
+        if (!data.name) return;
+
+        const product: Product = {
+          id: document.id,
+          icon: data.icon || "🛒",
+          name: data.name,
+          category: data.category,
+          ingredientId: data.ingredientId || document.id,
+          search: Array.isArray(data.search) ? data.search : [],
+          aliases: Array.isArray(data.aliases) ? data.aliases : [],
+        };
+
+        addProductKey(map, document.id, product);
+        addProductKey(map, product.id, product);
+        addProductKey(map, product.ingredientId, product);
+        addProductKey(map, product.name, product);
+
+        product.aliases?.forEach((alias) => addProductKey(map, alias, product));
+        product.search?.forEach((term) => addProductKey(map, term, product));
       });
 
       setProductsMap(map);
@@ -350,10 +378,16 @@ export default function AiCookPage() {
     return favoriteRecipes.map(buildMatch);
   }, [favoriteRecipes, fridgeIngredientIds]);
 
-  function getProductLabel(id: string) {
-    const product = productsMap[id];
+  function getProductByIngredientId(id: string) {
+    return productsMap[id] || productsMap[normalizeText(id)];
+  }
 
-    if (!product) return id;
+  function getProductLabel(id: string) {
+    const product = getProductByIngredientId(id);
+
+    if (!product) {
+      return id.replace(/_/g, " ");
+    }
 
     return `${product.icon || "🛒"} ${product.name}`;
   }
@@ -466,18 +500,18 @@ export default function AiCookPage() {
     if (!familyId) return;
 
     for (const ingredientId of result.missingIds) {
-      const product = productsMap[ingredientId];
+      const product = getProductByIngredientId(ingredientId);
 
       const name = product
         ? `${product.icon || "🛒"} ${product.name}`
-        : ingredientId;
+        : ingredientId.replace(/_/g, " ");
 
       await addDoc(collection(db, "families", familyId, "shopping"), {
         name,
-        productName: product?.name || ingredientId,
+        productName: product?.name || ingredientId.replace(/_/g, " "),
         icon: product?.icon || "🛒",
-        productId: ingredientId,
-        ingredientId,
+        productId: product?.id || ingredientId,
+        ingredientId: product?.ingredientId || ingredientId,
         category: product?.category || "Другое",
         source: "AI Cook",
         recipeId: result.recipe.id,
