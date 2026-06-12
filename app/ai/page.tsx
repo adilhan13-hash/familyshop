@@ -69,6 +69,10 @@ type CookingRecipe = {
   category?: string;
   cookingTime?: string;
   score?: number;
+  mealPlanId?: string;
+  mealPlanTitle?: string;
+  mealPlanEmoji?: string;
+  mealPlanSubtitle?: string;
 };
 
 type MatchResult = {
@@ -84,6 +88,16 @@ type IngredientAlias = {
   name: string;
   productId?: string;
   category?: string;
+};
+
+type MealPlan = {
+  id: string;
+  emoji: string;
+  title: string;
+  subtitle: string;
+  items: MatchResult[];
+  score: number;
+  missingIds: string[];
 };
 
 function normalizeText(value: string) {
@@ -368,6 +382,10 @@ export default function AiPage() {
   const [loadingSearch, setLoadingSearch] = useState(false);
   const [loadingFavorites, setLoadingFavorites] = useState(true);
 
+  const [showMealPlan, setShowMealPlan] = useState(true);
+  const [mealRecipeOverrides, setMealRecipeOverrides] = useState<
+    Record<string, string>
+  >({});
   const [showCooking, setShowCooking] = useState(true);
   const [showSuggested, setShowSuggested] = useState(true);
   const [showSearch, setShowSearch] = useState(true);
@@ -532,35 +550,43 @@ export default function AiPage() {
   }, [familyId]);
 
   useEffect(() => {
-    const recipesQuery = query(collection(db, "recipes"), limit(700));
+    async function loadAllRecipes() {
+      try {
+        setLoadingSuggested(true);
 
-    const unsubscribe = onSnapshot(recipesQuery, (snapshot) => {
-      const items: Recipe[] = [];
+        const snapshot = await getDocs(collection(db, "recipes"));
+        const items: Recipe[] = [];
 
-      snapshot.forEach((document) => {
-        const data = document.data();
-        items.push({
-          id: data.id || document.id,
-          title: data.title || "Без названия",
-          category: data.category || "Рецепт",
-          cuisine: data.cuisine,
-          difficulty: data.difficulty,
-          cookingTime: data.cookingTime,
-          cookingTimeText: data.cookingTimeText,
-          time: data.time,
-          description: data.description,
-          ingredientIds: data.ingredientIds || [],
-          optionalIngredientIds: data.optionalIngredientIds || [],
-          steps: data.steps || [],
-          searchTitle: data.searchTitle || normalizeText(data.title || ""),
+        snapshot.forEach((document) => {
+          const data = document.data();
+
+          items.push({
+            id: data.id || document.id,
+            title: data.title || "Без названия",
+            category: data.category || "Рецепт",
+            cuisine: data.cuisine,
+            difficulty: data.difficulty,
+            cookingTime: data.cookingTime,
+            cookingTimeText: data.cookingTimeText,
+            time: data.time,
+            description: data.description,
+            ingredientIds: data.ingredientIds || [],
+            optionalIngredientIds: data.optionalIngredientIds || [],
+            steps: data.steps || [],
+            searchTitle: data.searchTitle || normalizeText(data.title || ""),
+          });
         });
-      });
 
-      setSuggestedRecipes(items);
-      setLoadingSuggested(false);
-    });
+        setSuggestedRecipes(items);
+      } catch (error) {
+        console.error("AI recipes load error", error);
+        setSuggestedRecipes([]);
+      } finally {
+        setLoadingSuggested(false);
+      }
+    }
 
-    return () => unsubscribe();
+    loadAllRecipes();
   }, []);
 
   useEffect(() => {
@@ -617,6 +643,10 @@ export default function AiPage() {
           category: data.category || "Рецепт",
           cookingTime: data.cookingTime || "",
           score: data.score || 0,
+          mealPlanId: data.mealPlanId || "single",
+          mealPlanTitle: data.mealPlanTitle || "Отдельные блюда",
+          mealPlanEmoji: data.mealPlanEmoji || "👨‍🍳",
+          mealPlanSubtitle: data.mealPlanSubtitle || "Будем готовить",
         });
       });
 
@@ -732,7 +762,7 @@ export default function AiPage() {
     };
   }
 
-  const suggestedResults = useMemo(() => {
+  const allMatchedResults = useMemo(() => {
     const uniqueByTitle = new Map<string, MatchResult>();
 
     suggestedRecipes
@@ -756,8 +786,181 @@ export default function AiPage() {
         }
       });
 
-    return Array.from(uniqueByTitle.values()).slice(0, 30);
+    return Array.from(uniqueByTitle.values());
   }, [suggestedRecipes, fridgeIngredientIds]);
+
+  const suggestedResults = useMemo(() => {
+    const perfectResults = allMatchedResults
+      .filter((result) => result.score === 100)
+      .slice(0, 15);
+
+    const almostResults = allMatchedResults
+      .filter((result) => result.score < 100)
+      .slice(0, 50 - perfectResults.length);
+
+    return [...perfectResults, ...almostResults];
+  }, [allMatchedResults]);
+
+  function recipeKind(result: MatchResult) {
+    const text = normalizeText(
+      `${result.recipe.title} ${result.recipe.category || ""}`,
+    );
+
+    if (/(салат|винегрет|закуска|овощн)/.test(text)) return "salad";
+    if (
+      /(суп|борщ|щи|уха|рассольник|солянка|окрошка|шурпа|бульон|крем суп)/.test(
+        text,
+      )
+    )
+      return "soup";
+    if (/(чай|кофе|компот|морс|кисель|напиток|сок|какао)/.test(text))
+      return "drink";
+    if (
+      /(десерт|торт|пирог|печенье|кекс|булоч|пирожн|сырник|запеканка|блины|оладьи)/.test(
+        text,
+      )
+    ) {
+      if (
+        /(сырник|каша|омлет|яичниц|блины|оладьи|бутерброд|тост|завтрак)/.test(
+          text,
+        )
+      ) {
+        return "breakfast";
+      }
+      return "dessert";
+    }
+    if (
+      /(завтрак|омлет|яичниц|каша|бутерброд|тост|гренк|сырник|блины|оладьи)/.test(
+        text,
+      )
+    ) {
+      return "breakfast";
+    }
+
+    return "main";
+  }
+
+  const mealPlans = useMemo(() => {
+    const usableResults = allMatchedResults.filter(
+      (result) => result.score >= 70,
+    );
+
+    function best(kind: string, excludeIds: string[] = []) {
+      return usableResults.find(
+        (result) =>
+          recipeKind(result) === kind && !excludeIds.includes(result.recipe.id),
+      );
+    }
+
+    function fallbackMain(excludeIds: string[] = []) {
+      return usableResults.find(
+        (result) =>
+          recipeKind(result) === "main" &&
+          !excludeIds.includes(result.recipe.id),
+      );
+    }
+
+    function rebuildPlan(plan: MealPlan): MealPlan {
+      const replacedItems = plan.items.map((item, index) => {
+        const overrideId = mealRecipeOverrides[`${plan.id}_${index}`];
+        const overrideItem = overrideId
+          ? usableResults.find((result) => result.recipe.id === overrideId)
+          : null;
+
+        return overrideItem || item;
+      });
+
+      const missingIds = Array.from(
+        new Set(replacedItems.flatMap((item) => item.missingIds)),
+      );
+
+      const score = Math.round(
+        replacedItems.reduce((sum, item) => sum + item.score, 0) /
+          replacedItems.length,
+      );
+
+      return {
+        ...plan,
+        items: replacedItems,
+        score,
+        missingIds,
+      };
+    }
+
+    function buildPlan(
+      id: string,
+      emoji: string,
+      title: string,
+      subtitle: string,
+      items: Array<MatchResult | undefined>,
+    ): MealPlan | null {
+      const cleanItems = items.filter(Boolean) as MatchResult[];
+
+      if (cleanItems.length === 0) return null;
+
+      const missingIds = Array.from(
+        new Set(cleanItems.flatMap((item) => item.missingIds)),
+      );
+
+      const score = Math.round(
+        cleanItems.reduce((sum, item) => sum + item.score, 0) /
+          cleanItems.length,
+      );
+
+      return rebuildPlan({
+        id,
+        emoji,
+        title,
+        subtitle,
+        items: cleanItems,
+        score,
+        missingIds,
+      });
+    }
+
+    const breakfastMain = best("breakfast") || fallbackMain();
+    const breakfastDrink = best(
+      "drink",
+      breakfastMain ? [breakfastMain.recipe.id] : [],
+    );
+
+    const lunchSalad = best("salad");
+    const lunchSoup = best("soup", lunchSalad ? [lunchSalad.recipe.id] : []);
+    const lunchMain = fallbackMain(
+      [lunchSalad?.recipe.id, lunchSoup?.recipe.id].filter(Boolean) as string[],
+    );
+
+    const dinnerSalad = best("salad");
+    const dinnerMain = fallbackMain(dinnerSalad ? [dinnerSalad.recipe.id] : []);
+
+    return [
+      buildPlan("breakfast", "🌅", "Завтрак", "Быстрый вариант на утро", [
+        breakfastMain,
+        breakfastDrink,
+      ]),
+      buildPlan("lunch", "☀️", "Обед", "Салат + первое + второе", [
+        lunchSalad,
+        lunchSoup,
+        lunchMain,
+      ]),
+      buildPlan("dinner", "🌙", "Ужин", "Салат + основное блюдо", [
+        dinnerSalad,
+        dinnerMain,
+      ]),
+    ].filter(Boolean) as MealPlan[];
+  }, [allMatchedResults, mealRecipeOverrides]);
+
+  const recommendedMeal = useMemo(() => {
+    if (mealPlans.length === 0) return null;
+
+    return [...mealPlans].sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.missingIds.length !== b.missingIds.length) {
+        return a.missingIds.length - b.missingIds.length;
+      }
+      return b.items.length - a.items.length;
+    })[0];
+  }, [mealPlans]);
 
   const searchResults = useMemo(() => {
     return searchRecipes.map(buildMatch);
@@ -940,6 +1143,326 @@ export default function AiPage() {
     await deleteDoc(doc(db, "families", familyId, "cookingNow", item.id));
   }
 
+  function refreshMealRecipe(plan: MealPlan, item: MatchResult, index: number) {
+    const kind = recipeKind(item);
+    const usedIds = plan.items
+      .filter((_, itemIndex) => itemIndex !== index)
+      .map((planItem) => planItem.recipe.id);
+
+    const candidates = allMatchedResults.filter(
+      (result) =>
+        result.score >= 70 &&
+        recipeKind(result) === kind &&
+        !usedIds.includes(result.recipe.id),
+    );
+
+    if (candidates.length <= 1) {
+      setMessage("Пока нет другого подходящего рецепта для замены.");
+      return;
+    }
+
+    const currentIndex = candidates.findIndex(
+      (candidate) => candidate.recipe.id === item.recipe.id,
+    );
+    const nextIndex =
+      currentIndex >= 0 ? (currentIndex + 1) % candidates.length : 0;
+    const nextRecipe = candidates[nextIndex];
+
+    setMealRecipeOverrides((current) => ({
+      ...current,
+      [`${plan.id}_${index}`]: nextRecipe.recipe.id,
+    }));
+
+    setMessage(`🔄 Заменил на: ${nextRecipe.recipe.title}`);
+  }
+
+  async function addSingleMealItemToCooking(plan: MealPlan, item: MatchResult) {
+    if (!familyId) return;
+
+    await setDoc(
+      doc(db, "families", familyId, "cookingNow", `${plan.id}_${item.recipe.id}`),
+      {
+        recipeId: item.recipe.id,
+        title: item.recipe.title,
+        category: item.recipe.category || "Рецепт",
+        cookingTime: getRecipeTime(item.recipe),
+        score: item.score,
+        mealPlanId: plan.id,
+        mealPlanTitle: plan.title,
+        mealPlanEmoji: plan.emoji,
+        mealPlanSubtitle: plan.subtitle,
+        userId: appUser?.uid || "unknown",
+        userName: appUser?.displayName || "Без имени",
+        createdAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    await addActivity({
+      familyId,
+      userId: appUser?.uid || "unknown",
+      userName: appUser?.displayName || "Без имени",
+      type: "ai_meal_single_start_cooking",
+      title: "Будет готовить блюдо",
+      message: `${item.recipe.title} из набора ${plan.title}`,
+      emoji: "👨‍🍳",
+      itemName: item.recipe.title,
+    });
+
+    setMessage(`👨‍🍳 Добавлено в “Будем готовить”: ${item.recipe.title}`);
+    setCookingAnimation(true);
+    setTimeout(() => setCookingAnimation(false), 2000);
+  }
+
+  async function addMealPlanToCooking(plan: MealPlan, addMissing: boolean) {
+    if (!familyId) return;
+
+    if (plan.items.length === 0) {
+      setMessage(`В "${plan.title}" нет выбранных блюд.`);
+      return;
+    }
+
+    if (addMissing && plan.missingIds.length > 0) {
+      for (const ingredientId of plan.missingIds) {
+        const ingredient = getIngredientInfo(ingredientId);
+        const name = makeLabel(ingredient.icon, ingredient.name);
+
+        await addDoc(collection(db, "families", familyId, "shopping"), {
+          name,
+          productName: ingredient.name,
+          icon: ingredient.icon,
+          productId: ingredient.productId || ingredientId,
+          ingredientId: ingredient.productId || ingredientId,
+          category: ingredient.category || "Другое",
+          source: "AI Cook meal plan",
+          mealPlanId: plan.id,
+          mealPlanTitle: plan.title,
+          createdAt: serverTimestamp(),
+        });
+
+        await addActivity({
+          familyId,
+          userId: appUser?.uid || "unknown",
+          userName: appUser?.displayName || "Без имени",
+          type: "ai_meal_add_to_shopping",
+          title: "AI добавил для меню",
+          message: `${name} для набора ${plan.title}`,
+          emoji: "🍽",
+          itemName: name,
+        });
+      }
+    }
+
+    for (const item of plan.items) {
+      await setDoc(
+        doc(db, "families", familyId, "cookingNow", `${plan.id}_${item.recipe.id}`),
+        {
+          recipeId: item.recipe.id,
+          title: item.recipe.title,
+          category: item.recipe.category || "Рецепт",
+          cookingTime: getRecipeTime(item.recipe),
+          score: item.score,
+          mealPlanId: plan.id,
+          mealPlanTitle: plan.title,
+          mealPlanEmoji: plan.emoji,
+          mealPlanSubtitle: plan.subtitle,
+          userId: appUser?.uid || "unknown",
+          userName: appUser?.displayName || "Без имени",
+          createdAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+    }
+
+    await addActivity({
+      familyId,
+      userId: appUser?.uid || "unknown",
+      userName: appUser?.displayName || "Без имени",
+      type: "ai_meal_start_cooking",
+      title: "Будет готовить меню",
+      message: plan.title,
+      emoji: plan.emoji,
+      itemName: plan.title,
+    });
+
+    setMessage(
+      addMissing && plan.missingIds.length > 0
+        ? `🛒 Недостающее для "${plan.title}" добавлено в покупки, а меню добавлено в “Будем готовить”.`
+        : `👨‍🍳 "${plan.title}" добавлен в “Будем готовить”.`,
+    );
+    setAddedAnimation(addMissing && plan.missingIds.length > 0);
+    setCookingAnimation(true);
+    setTimeout(() => setAddedAnimation(false), 2000);
+    setTimeout(() => setCookingAnimation(false), 2000);
+  }
+
+  async function addMealMissingToShopping(plan: MealPlan) {
+    await addMealPlanToCooking(plan, true);
+  }
+
+  function getMealPlanStyle(planId: string) {
+    if (planId === "breakfast") {
+      return {
+        card: "bg-amber-50 border border-amber-200",
+        badge: "bg-amber-100 text-amber-800",
+        item: "bg-white/90",
+        refresh: "bg-amber-100 text-amber-800",
+        missing: "bg-orange-100 text-orange-800",
+        add: "bg-amber-500 text-white",
+      };
+    }
+
+    if (planId === "lunch") {
+      return {
+        card: "bg-green-50 border border-green-200",
+        badge: "bg-green-100 text-green-800",
+        item: "bg-white/90",
+        refresh: "bg-green-100 text-green-800",
+        missing: "bg-orange-100 text-orange-800",
+        add: "bg-green-500 text-white",
+      };
+    }
+
+    return {
+      card: "bg-indigo-50 border border-indigo-200",
+      badge: "bg-indigo-100 text-indigo-800",
+      item: "bg-white/90",
+      refresh: "bg-indigo-100 text-indigo-800",
+      missing: "bg-orange-100 text-orange-800",
+      add: "bg-indigo-500 text-white",
+    };
+  }
+
+  function MealPlanCard({ plan }: { plan: MealPlan }) {
+    const style = getMealPlanStyle(plan.id);
+
+    return (
+      <motion.div
+        layout
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        className={`rounded-3xl p-4 shadow-sm ${style.card}`}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-medium text-slate-500">
+              {plan.emoji} {plan.subtitle}
+            </p>
+            <h3 className="mt-1 text-2xl font-bold text-slate-900">
+              {plan.title}
+            </h3>
+          </div>
+
+          <div
+            className={`rounded-full px-3 py-1 text-sm font-semibold ${style.badge}`}
+          >
+            {plan.score}%
+          </div>
+        </div>
+
+        <div className="mt-4 space-y-2">
+          {plan.items.map((item, index) => (
+            <div
+              key={`${plan.id}_${index}_${item.recipe.id}`}
+              className={`flex items-center gap-2 rounded-2xl px-3 py-3 shadow-sm ${style.item}`}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedRecipe(item);
+                  setMessage("");
+                }}
+                className="min-w-0 flex-1 text-left"
+              >
+                <p className="truncate font-semibold text-slate-900">
+                  {recipeKind(item) === "salad"
+                    ? "🥗"
+                    : recipeKind(item) === "soup"
+                      ? "🍲"
+                      : recipeKind(item) === "drink"
+                        ? "☕"
+                        : recipeKind(item) === "breakfast"
+                          ? "🍳"
+                          : "🍽"}{" "}
+                  {item.recipe.title}
+                </p>
+                <p className="mt-1 text-sm text-slate-500">
+                  {item.missingIds.length > 0
+                    ? `Не хватает: ${item.missingIds.length}`
+                    : "Всё есть дома"}
+                </p>
+              </button>
+
+              <span className="shrink-0 rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-600">
+                {item.score}%
+              </span>
+
+              <button
+                type="button"
+                onClick={() => addSingleMealItemToCooking(plan, item)}
+                className="shrink-0 rounded-full bg-slate-900 px-3 py-2 text-sm font-semibold text-white"
+                title="Добавить это блюдо в Будем готовить"
+              >
+                👨‍🍳
+              </button>
+
+              <button
+                type="button"
+                onClick={() => refreshMealRecipe(plan, item, index)}
+                className={`shrink-0 rounded-full px-3 py-2 text-sm font-semibold ${style.refresh}`}
+                title="Показать другой вариант"
+              >
+                🎲
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {plan.missingIds.length > 0 ? (
+          <div className="mt-4 rounded-2xl bg-white/90 p-3">
+            <p className="text-sm font-semibold text-slate-700">Не хватает:</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {plan.missingIds.slice(0, 8).map((id) => (
+                <span
+                  key={id}
+                  className={`rounded-full px-3 py-1 text-sm ${style.missing}`}
+                >
+                  {getProductLabel(id)}
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <p className="mt-4 rounded-2xl bg-white/90 p-3 text-sm font-semibold text-green-700">
+            ✅ Для этого набора всё есть дома
+          </p>
+        )}
+
+        <div className="mt-4 grid gap-2">
+          <button
+            type="button"
+            onClick={() => addMealPlanToCooking(plan, false)}
+            disabled={plan.items.length === 0}
+            className="w-full rounded-2xl bg-slate-900 px-3 py-3 text-sm font-semibold text-white disabled:opacity-50"
+          >
+            👨‍🍳 Будем готовить
+          </button>
+
+          {plan.missingIds.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => addMealMissingToShopping(plan)}
+              disabled={plan.items.length === 0}
+              className={`w-full rounded-2xl px-3 py-3 text-sm font-semibold disabled:opacity-50 ${style.add}`}
+            >
+              🛒 Добавить недостающее
+            </button>
+          ) : null}
+        </div>
+      </motion.div>
+    );
+  }
+
   function RecipeCard({ result }: { result: MatchResult }) {
     const recipe = result.recipe;
     const favorite = isFavoriteRecipe(recipe.id);
@@ -1019,6 +1542,47 @@ export default function AiPage() {
 
   const isSearching = normalizeText(search).length >= 2;
 
+
+  const cookingGroups = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        id: string;
+        title: string;
+        emoji: string;
+        subtitle: string;
+        items: CookingRecipe[];
+      }
+    >();
+
+    cookingRecipes.forEach((recipe) => {
+      const groupId = recipe.mealPlanId || "single";
+
+      if (!groups.has(groupId)) {
+        groups.set(groupId, {
+          id: groupId,
+          title: recipe.mealPlanTitle || "Отдельные блюда",
+          emoji: recipe.mealPlanEmoji || "👨‍🍳",
+          subtitle: recipe.mealPlanSubtitle || "Будем готовить",
+          items: [],
+        });
+      }
+
+      groups.get(groupId)?.items.push(recipe);
+    });
+
+    const order: Record<string, number> = {
+      breakfast: 1,
+      lunch: 2,
+      dinner: 3,
+      single: 4,
+    };
+
+    return Array.from(groups.values()).sort(
+      (a, b) => (order[a.id] || 99) - (order[b.id] || 99),
+    );
+  }, [cookingRecipes]);
+
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
       <div className="mx-auto min-h-screen max-w-md bg-slate-50 pb-24">
@@ -1031,7 +1595,7 @@ export default function AiPage() {
           <p className="text-sm text-slate-500">FamilyShop</p>
           <h1 className="text-3xl font-bold">AI Cook 🤖</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Поиск рецептов и блюда из холодильника
+            Меню на сегодня из продуктов дома
           </p>
         </motion.header>
 
@@ -1104,6 +1668,30 @@ export default function AiPage() {
             </ToggleBlock>
           )}
 
+          {!isSearching && (
+            <ToggleBlock
+              title="🍽 Меню на сегодня"
+              count={mealPlans.length}
+              open={showMealPlan}
+              onToggle={() => setShowMealPlan((prev) => !prev)}
+            >
+              {loadingSuggested ? (
+                <p className="text-sm text-slate-500">Собираю меню...</p>
+              ) : mealPlans.length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  Пока не получилось собрать завтрак, обед или ужин. Добавь
+                  больше продуктов в холодильник.
+                </p>
+              ) : (
+                <div className="space-y-4">
+                  {mealPlans.map((plan) => (
+                    <MealPlanCard key={plan.id} plan={plan} />
+                  ))}
+                </div>
+              )}
+            </ToggleBlock>
+          )}
+
           <ToggleBlock
             title="👨‍🍳 Будем готовить"
             count={cookingRecipes.length}
@@ -1112,58 +1700,88 @@ export default function AiPage() {
           >
             {cookingRecipes.length === 0 ? (
               <p className="text-sm text-slate-500">
-                Пока нет выбранных блюд. Открой рецепт и нажми “Будем готовить”.
+                Пока нет выбранных блюд. Добавь недостающее из завтрака, обеда
+                или ужина — весь набор появится здесь отдельной группой.
               </p>
             ) : (
               <AnimatePresence mode="popLayout">
-                <div className="space-y-3">
-                  {cookingRecipes.map((recipe) => (
-                    <motion.div
-                      key={recipe.id}
-                      layout
-                      initial={{ opacity: 0, y: 12, scale: 0.98 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                      whileTap={{ scale: 0.98 }}
-                      onClick={() => openRecipeById(recipe.recipeId)}
-                      className="cursor-pointer rounded-2xl bg-slate-50 p-4"
-                    >
-                      <h3 className="text-base font-semibold text-slate-900">
-                        🔍 {recipe.title}
-                      </h3>
-                      <p className="mt-1 text-sm text-slate-500">
-                        {recipe.category || "Рецепт"}
-                        {recipe.cookingTime ? ` · ${recipe.cookingTime}` : ""}
-                        {typeof recipe.score === "number"
-                          ? ` · ${recipe.score}%`
-                          : ""}
-                      </p>
+                <div className="space-y-4">
+                  {cookingGroups.map((group) => {
+                    const style = getMealPlanStyle(group.id);
 
-                      <div className="mt-3 flex gap-2">
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            markCookingDone(recipe);
-                          }}
-                          className="flex-1 rounded-xl bg-green-500 px-3 py-2 text-sm font-medium text-white"
-                        >
-                          ✅ Приготовили
-                        </button>
+                    return (
+                      <motion.div
+                        key={group.id}
+                        layout
+                        initial={{ opacity: 0, y: 12, scale: 0.98 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -8, scale: 0.98 }}
+                        className={`rounded-3xl p-4 shadow-sm ${style.card}`}
+                      >
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-medium text-slate-500">
+                              {group.emoji} {group.subtitle}
+                            </p>
+                            <h3 className="text-lg font-bold text-slate-900">
+                              {group.title}
+                            </h3>
+                          </div>
 
-                        <button
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            removeCooking(recipe);
-                          }}
-                          className="flex-1 rounded-xl bg-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
-                        >
-                          Убрать
-                        </button>
-                      </div>
-                    </motion.div>
-                  ))}
+                          <span className={`rounded-full px-3 py-1 text-sm font-semibold ${style.badge}`}>
+                            {group.items.length}
+                          </span>
+                        </div>
+
+                        <div className="space-y-3">
+                          {group.items.map((recipe) => (
+                            <motion.div
+                              key={recipe.id}
+                              layout
+                              whileTap={{ scale: 0.98 }}
+                              onClick={() => openRecipeById(recipe.recipeId)}
+                              className={`cursor-pointer rounded-2xl p-3 ${style.item}`}
+                            >
+                              <h4 className="text-base font-semibold text-slate-900">
+                                🔍 {recipe.title}
+                              </h4>
+                              <p className="mt-1 text-sm text-slate-500">
+                                {recipe.category || "Рецепт"}
+                                {recipe.cookingTime ? ` · ${recipe.cookingTime}` : ""}
+                                {typeof recipe.score === "number"
+                                  ? ` · ${recipe.score}%`
+                                  : ""}
+                              </p>
+
+                              <div className="mt-3 flex gap-2">
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    markCookingDone(recipe);
+                                  }}
+                                  className="flex-1 rounded-xl bg-green-500 px-3 py-2 text-sm font-medium text-white"
+                                >
+                                  ✅ Приготовили
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    removeCooking(recipe);
+                                  }}
+                                  className="flex-1 rounded-xl bg-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+                                >
+                                  Убрать
+                                </button>
+                              </div>
+                            </motion.div>
+                          ))}
+                        </div>
+                      </motion.div>
+                    );
+                  })}
                 </div>
               </AnimatePresence>
             )}
@@ -1171,27 +1789,6 @@ export default function AiPage() {
 
           {!isSearching && (
             <>
-              <ToggleBlock
-                title="🥘 Можно приготовить"
-                count={suggestedResults.length}
-                open={showSuggested}
-                onToggle={() => setShowSuggested((prev) => !prev)}
-              >
-                {loadingSuggested ? (
-                  <p className="text-sm text-slate-500">Подбираю рецепты...</p>
-                ) : suggestedResults.length === 0 ? (
-                  <p className="text-sm text-slate-500">
-                    Пока нет подходящих блюд из продуктов дома.
-                  </p>
-                ) : (
-                  <div className="space-y-3">
-                    {suggestedResults.map((result) => (
-                      <RecipeCard key={result.recipe.id} result={result} />
-                    ))}
-                  </div>
-                )}
-              </ToggleBlock>
-
               <ToggleBlock
                 title="⭐ Избранные рецепты"
                 count={favoriteResults.length}
