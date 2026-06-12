@@ -15,7 +15,7 @@ const firebaseConfig = {
   appId: "1:331402676242:web:2b2bd56dfbc4d0fa9e70cb",
 };
 
-const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
+export const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
 
 export const db = initializeFirestore(app, {
   localCache: persistentLocalCache({

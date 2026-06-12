@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import BottomNav from "../../components/BottomNav";
 import { useFamilyAuth } from "../../components/AuthProvider";
 import { db } from "../../lib/firebase";
+import { enablePushNotifications } from "../../lib/firebaseMessaging";
 import {
   collection,
   limit,
@@ -34,9 +35,7 @@ type CountState = {
 
 function getInitials(name?: string) {
   const cleanName = (name || "").trim();
-
   if (!cleanName) return "👤";
-
   return cleanName.slice(0, 1).toUpperCase();
 }
 
@@ -60,7 +59,7 @@ function formatTime(createdAt?: { seconds: number }) {
 }
 
 export default function HomePage() {
-  const { familyId } = useFamilyAuth();
+  const { familyId, user } = useFamilyAuth();
 
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [counts, setCounts] = useState<CountState>({
@@ -68,6 +67,24 @@ export default function HomePage() {
     fridge: 0,
     wish: 0,
   });
+
+  const [pushLoading, setPushLoading] = useState(false);
+  const [pushMessage, setPushMessage] = useState("");
+
+  async function handleEnablePush() {
+    if (!user?.uid) {
+      setPushMessage("Сначала нужно войти в аккаунт");
+      return;
+    }
+
+    setPushLoading(true);
+    setPushMessage("");
+
+    const result = await enablePushNotifications(user.uid);
+
+    setPushMessage(result.message);
+    setPushLoading(false);
+  }
 
   useEffect(() => {
     if (!familyId) return;
@@ -164,6 +181,31 @@ export default function HomePage() {
         </header>
 
         <section className="px-5 space-y-5">
+          <div className="rounded-3xl bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold">Уведомления</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Включи пуши для FamilyShop на этом устройстве.
+                </p>
+              </div>
+
+              <button
+                onClick={handleEnablePush}
+                disabled={pushLoading}
+                className="shrink-0 rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
+              >
+                {pushLoading ? "..." : "🔔 Включить"}
+              </button>
+            </div>
+
+            {pushMessage ? (
+              <p className="mt-3 rounded-2xl bg-slate-50 p-3 text-sm text-slate-600">
+                {pushMessage}
+              </p>
+            ) : null}
+          </div>
+
           <div className="grid grid-cols-2 gap-3">
             <Link
               href="/shopping"
