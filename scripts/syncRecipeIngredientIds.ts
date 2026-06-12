@@ -1,9 +1,20 @@
-import { doc, serverTimestamp, setDoc } from "firebase/firestore";
+import {
+  collection,
+  doc,
+  getDocs,
+  serverTimestamp,
+  setDoc,
+} from "firebase/firestore";
 import { db } from "../lib/firebase";
-import recipes from "../data/recipes_all.json";
-import products from "../data/products_deep_clean_v2.json";
+import products from "../data/products_v6_ready_for_firebase_icons_clean.json";
+import canonicalMapRaw from "../data/ingredient_to_product_canonical_map_v6.json";
 
-const DRY_RUN = false; // сначала проверка. Для записи поменять на false
+// true  = только проверка, ничего не пишет в Firebase
+// false = будет обновлять рецепты в Firestore
+const DRY_RUN = true;
+
+const WRITE_PAUSE_MS = 80;
+const WRITE_LOG_EVERY = 50;
 
 type Product = {
   id: string;
@@ -12,205 +23,69 @@ type Product = {
   category?: string;
   aliases?: string[];
   search?: string[];
+  mergedIds?: string[];
 };
 
 type Recipe = {
   id: string;
-  title: string;
+  title?: string;
   category?: string;
   cuisine?: string;
   description?: string;
   ingredientIds?: string[];
   optionalIngredientIds?: string[];
-  steps?: string[];
   [key: string]: any;
 };
 
-const manualMap: Record<string, string> = {
-  // базовые
-  sol: "sol",
-  soli: "sol",
-  sahar: "sahar",
-  sahara: "sahar",
-  voda: "voda",
-  vody: "voda",
-  teplaya_voda: "voda",
-  goryachaya_voda: "voda",
-  kipyachenaya_voda: "voda",
-
-  // молочка / яйца
-  moloko: "moloko",
-  moloka: "moloko",
-  yayco: "yayca",
-  yayca: "yayca",
-  yayco_kurinoe: "yayca",
-  smetana: "smetana",
-  smetany: "smetana",
-  smetana_20: "smetana",
-  slivki: "slivki",
-  slivok: "slivki",
-  slivki_jirnye: "slivki",
-  tvorog: "tvorog",
-  tvoroga: "tvorog",
-  tvorog_obezirenniy: "tvorog",
-  syr: "syr",
-  syra: "syr",
-  syr_tverdyy: "syr",
-  maslo_slivochnoe: "maslo-slivochnoe",
-  slivochnoe_maslo: "maslo-slivochnoe",
-
-  // масла
-  maslo_rastitelnoe: "maslo-rastitelnoe",
-  rastitelnoe_maslo: "maslo-rastitelnoe",
-  rastitelnogo_masla: "maslo-rastitelnoe",
-  maslo_podsolnechnoe: "maslo-rastitelnoe",
-  podsolnechnoe_maslo: "maslo-rastitelnoe",
-  olivkovoe_maslo: "olivkovoe-maslo",
-
-  // овощи / зелень
-  luk: "luk-repchatyy",
-  luka: "luk-repchatyy",
-  luk_repchatiy: "luk-repchatyy",
-  luk_repchatyy: "luk-repchatyy",
-  chesnok: "chesnok",
-  chesnoka: "chesnok",
-  morkov: "morkov",
-  morkovi: "morkov",
-  kartofel: "kartofel",
-  kartofelya: "kartofel",
-  pomidor: "pomidor",
-  pomidory: "pomidor",
-  tomat: "pomidor",
-  tomaty: "pomidor",
-  ogurec: "ogurec",
-  ogurcy: "ogurec",
-  kapusta: "kapusta",
-  kapusty: "kapusta",
-  kapusta_belokochannaya: "kapusta",
-  zelen: "zelen",
-  zeleni: "zelen",
-  ukrop: "ukrop",
-  ukropa: "ukrop",
-  petrushka: "petrushka",
-  petrushki: "petrushka",
-  kinza: "kinza",
-  bazilik: "bazilik",
-  shpinat: "shpinat",
-  griby: "griby",
-  gribov: "griby",
-  shampinony: "shampinony",
-  shampinonov: "shampinony",
-  kukuruza: "kukuruza",
-  kukuruznyy_krahmal: "krahmal",
-  kukuruzniy_krahmal: "krahmal",
-
-  // мясо / птица / фарш
-  govyadina: "govyadina",
-  govyadiny: "govyadina",
-  govyajiy_farsh: "farsh-govyazhiy",
-  govyazhiy_farsh: "farsh-govyazhiy",
-  farsh_govyazhiy: "farsh-govyazhiy",
-  kurica: "kurica",
-  kuricy: "kurica",
-  kurinoe_file: "kurinoe-file",
-  kurinaya_grudka: "kurinaya-grudka",
-  kuriniy_farsh: "farsh-kurinyy",
-  kurinyy_farsh: "farsh-kurinyy",
-  farsh_kurinyy: "farsh-kurinyy",
-  svinina: "svinina",
-  svininy: "svinina",
-  baranina: "baranina",
-  myaso: "myaso",
-  myasa: "myaso",
-  kolbasa: "kolbasa",
-  sosisku: "sosiski",
-  sosiski: "sosiski",
-  vetcina: "vetchina",
-  bekon: "bekon",
-
-  // рыба
-  ryba: "ryba",
-  ryby: "ryba",
-  file_ryby: "ryba",
-  semga: "semga",
-  losos: "losos",
-  forel: "forel",
-  mintay: "mintay",
-  treska: "treska",
-  tuna: "tunec",
-  tunec: "tunec",
-  krevetki: "krevetki",
-  kalmary: "kalmary",
-
-  // крупы / мука / хлеб
-  ris: "ris",
-  risa: "ris",
-  grechka: "grechka",
-  grechnevaya_krupa: "grechka",
-  grechnevoy_krupy: "grechka",
-  perlovaya_krupa: "perlovka",
-  perlovoy_krupy: "perlovka",
-  manka: "manka",
-  mannaya_krupa: "manka",
-  mannoy_krupy: "manka",
-  psheno: "psheno",
-  ovsyanka: "ovsyanka",
-  muka: "muka",
-  muki: "muka",
-  muka_pshenichnaya: "muka",
-  hleb: "hleb",
-  hleba: "hleb",
-  hleb_beliy: "hleb",
-  hleb_belyy: "hleb",
-  baton: "baton",
-  lavash: "lavash",
-  makarony: "makarony",
-  spagetti: "spagetti",
-  lapsha: "lapsha",
-
-  // специи
-  zira: "zira",
-  koriandr: "koriandr",
-  kurkuma: "kurkuma",
-  paprika: "paprika",
-  perec: "perec",
-  perec_chernyy: "perec-chernyy",
-  perec_chili: "perec-chili",
-  perec_chili_susheniy: "perec-chili",
-  lavrovyy_list: "lavrovyy-list",
-  muskatniy_oreh: "muskatnyy-oreh",
-  muskatnyy_oreh: "muskatnyy-oreh",
-  muskatniy_oreh_molotiy: "muskatnyy-oreh",
-  oregano: "oregano",
-  timyan: "timyan",
-  rozmarin: "rozmarin",
-  hmelisuneli: "hmeli-suneli",
-  hmeli_suneli: "hmeli-suneli",
-
-  // соусы / пасты
-  tomatnaya_pasta: "tomatnaya-pasta",
-  mayonez: "mayonez",
-  ketchup: "ketchup",
-  soevyy_sous: "soevyy-sous",
-  gorcica: "gorchica",
-  uksus: "uksus",
-
-  // сладкое / добавки
-  med: "med",
-  meda: "med",
-  shokolad: "shokolad",
-  kakao: "kakao",
-  izyum: "izyum",
-  orehi: "orehi",
-  kokosovaya_struzhka: "kokosovaya-struzhka",
-  drojji: "drozhzhi",
-  drozzi: "drozhzhi",
-  razryhlitel: "razryhlitel",
-  vanilin: "vanilin",
+type CanonicalItem = {
+  canonicalId: string;
+  canonicalName: string;
 };
 
+const canonicalMap = canonicalMapRaw as Record<string, CanonicalItem>;
+
+const manualMap: Record<string, string> = {
+  yayca_kurinye: "yayca",
+  yayco_kurinoe: "yayca",
+  yayca: "yayca",
+  yayco: "yayca",
+
+  muka_pshenichnaya: "muka",
+  muki: "muka",
+
+  luk_repchatiy: "luk_repchatyy",
+  luk_repchatyy: "luk_repchatyy",
+  luka: "luk_repchatyy",
+
+  chesnoka: "chesnok",
+
+  lavroviy_list: "lavrovyy_list",
+  lavrovyy_list: "lavrovyy_list",
+
+  maslo_rastitelnoe: "maslo_rastitelnoe",
+  rastitelnoe_maslo: "maslo_rastitelnoe",
+  rastitelnogo_masla: "maslo_rastitelnoe",
+
+  pomidor: "pomidory",
+  pomidory: "pomidory",
+  pomidorov: "pomidory",
+
+  tomatniy_sok: "tomatnyy_sok",
+  tomatnyy_sok: "tomatnyy_sok",
+
+  ogurcy: "ogurcy",
+  ogurtsy: "ogurcy",
+
+  perec_chenniy_molotiy: "perec_chernyy_molotyy",
+  perec_chernyy_molotyy: "perec_chernyy_molotyy",
+};
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function normalize(value: string) {
-  return value
+  return String(value || "")
     .toLowerCase()
     .replace(/ё/g, "е")
     .replace(/_/g, " ")
@@ -220,49 +95,12 @@ function normalize(value: string) {
     .trim();
 }
 
-function normalizeId(value: string) {
-  return normalize(value).replace(/\s+/g, "-");
-}
-
-function buildProductMap() {
-  const map = new Map<string, string>();
-
-  for (const product of products as Product[]) {
-    const values = [
-      product.id,
-      product.name,
-      ...(product.aliases || []),
-      ...(product.search || []),
-    ].filter(Boolean);
-
-    for (const value of values) {
-      map.set(normalize(String(value)), product.id);
-      map.set(normalizeId(String(value)), product.id);
-    }
-  }
-
-  for (const [oldId, newId] of Object.entries(manualMap)) {
-    map.set(normalize(oldId), newId);
-    map.set(normalizeId(oldId), newId);
-  }
-
-  return map;
-}
-
-function remapId(id: string, productMap: Map<string, string>) {
-  return (
-    productMap.get(normalize(id)) ||
-    productMap.get(normalizeId(id)) ||
-    id
-  );
-}
-
-function unique(values: string[]) {
-  return Array.from(new Set(values.filter(Boolean)));
+function normalizeKey(value: string) {
+  return normalize(value).replace(/\s+/g, "_");
 }
 
 function normalizeText(value: string) {
-  return value
+  return String(value || "")
     .toLowerCase()
     .replace(/ё/g, "е")
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
@@ -270,49 +108,218 @@ function normalizeText(value: string) {
     .trim();
 }
 
+function unique(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function buildProductLookup() {
+  const lookup = new Map<string, Product>();
+
+  for (const product of products as Product[]) {
+    const values = [
+      product.id,
+      product.name,
+      ...(product.aliases || []),
+      ...(product.search || []),
+      ...(product.mergedIds || []),
+    ].filter(Boolean);
+
+    for (const value of values) {
+      const text = String(value);
+      lookup.set(text, product);
+      lookup.set(normalize(text), product);
+      lookup.set(normalizeKey(text), product);
+      lookup.set(text.replace(/-/g, "_"), product);
+      lookup.set(text.replace(/_/g, "-"), product);
+    }
+  }
+
+  return lookup;
+}
+
+function buildCanonicalLookup() {
+  const lookup = new Map<string, CanonicalItem>();
+
+  for (const [key, value] of Object.entries(canonicalMap)) {
+    if (!value?.canonicalId) continue;
+
+    const values = [
+      key,
+      value.canonicalId,
+      value.canonicalName,
+    ].filter(Boolean);
+
+    for (const raw of values) {
+      const text = String(raw);
+      lookup.set(text, value);
+      lookup.set(normalize(text), value);
+      lookup.set(normalizeKey(text), value);
+      lookup.set(text.replace(/-/g, "_"), value);
+      lookup.set(text.replace(/_/g, "-"), value);
+    }
+  }
+
+  return lookup;
+}
+
+function getProductByAnyValue(value: string, productLookup: Map<string, Product>) {
+  return (
+    productLookup.get(value) ||
+    productLookup.get(normalize(value)) ||
+    productLookup.get(normalizeKey(value)) ||
+    productLookup.get(value.replace(/-/g, "_")) ||
+    productLookup.get(value.replace(/_/g, "-"))
+  );
+}
+
+function remapId(
+  oldId: string,
+  productLookup: Map<string, Product>,
+  canonicalLookup: Map<string, CanonicalItem>
+) {
+  const cleanId = String(oldId || "").trim();
+
+  if (!cleanId) {
+    return { newId: "", reason: "empty", productName: "" };
+  }
+
+  const directProduct = getProductByAnyValue(cleanId, productLookup);
+
+  if (directProduct) {
+    return {
+      newId: directProduct.id,
+      reason: directProduct.id === cleanId ? "already_product" : "product_lookup",
+      productName: directProduct.name,
+    };
+  }
+
+  const canonical =
+    canonicalLookup.get(cleanId) ||
+    canonicalLookup.get(normalize(cleanId)) ||
+    canonicalLookup.get(normalizeKey(cleanId));
+
+  if (canonical) {
+    const product =
+      getProductByAnyValue(canonical.canonicalId, productLookup) ||
+      getProductByAnyValue(canonical.canonicalName, productLookup);
+
+    if (product) {
+      return {
+        newId: product.id,
+        reason: "canonical_map",
+        productName: product.name,
+      };
+    }
+
+    return {
+      newId: cleanId,
+      reason: "canonical_without_product_keep_old",
+      productName: canonical.canonicalName || "",
+    };
+  }
+
+  const manualTarget =
+    manualMap[cleanId] || manualMap[normalizeKey(cleanId)] || manualMap[normalize(cleanId)];
+
+  if (manualTarget) {
+    const product = getProductByAnyValue(manualTarget, productLookup);
+
+    if (product) {
+      return {
+        newId: product.id,
+        reason: "manual_map",
+        productName: product.name,
+      };
+    }
+
+    return {
+      newId: cleanId,
+      reason: "manual_without_product_keep_old",
+      productName: "",
+    };
+  }
+
+  return { newId: cleanId, reason: "not_found", productName: "" };
+}
+
+function buildSearchText(recipe: Recipe, ingredientIds: string[], optionalIngredientIds: string[]) {
+  return normalizeText(
+    [
+      recipe.title,
+      recipe.category,
+      recipe.cuisine,
+      recipe.description,
+      ...ingredientIds,
+      ...optionalIngredientIds,
+    ]
+      .filter(Boolean)
+      .join(" ")
+  );
+}
+
+async function loadRecipesFromFirestore() {
+  const snapshot = await getDocs(collection(db, "recipes"));
+  const list: Recipe[] = [];
+
+  snapshot.forEach((document) => {
+    const data = document.data() as Omit<Recipe, "id">;
+    list.push({ id: document.id, ...data });
+  });
+
+  return list;
+}
+
 async function syncRecipeIngredientIds() {
-  const productMap = buildProductMap();
-  const list = recipes as Recipe[];
+  const productLookup = buildProductLookup();
+  const canonicalLookup = buildCanonicalLookup();
+  const list = await loadRecipesFromFirestore();
 
   let changedRecipes = 0;
   let unchangedRecipes = 0;
   let totalOldIds = 0;
   let totalChangedIds = 0;
+  let writtenRecipes = 0;
 
+  const reasons = new Map<string, number>();
   const notFound = new Map<string, number>();
+  const samples: string[] = [];
 
-  console.log(`Рецептов в файле: ${list.length}`);
-  console.log(`Products mapping keys: ${productMap.size}`);
-  console.log(
-    `DRY_RUN: ${DRY_RUN ? "да, только проверка" : "нет, будет запись в Firestore"}`
-  );
+  console.log("====================================");
+  console.log("FamilyShop recipe ingredient sync V8");
+  console.log("====================================");
+  console.log(`Рецептов из Firestore: ${list.length}`);
+  console.log(`Products lookup keys: ${productLookup.size}`);
+  console.log(`Canonical lookup keys: ${canonicalLookup.size}`);
+  console.log(`DRY_RUN: ${DRY_RUN ? "да, только проверка" : "нет, будет запись в Firestore"}`);
+  console.log("");
 
   for (const recipe of list) {
     const oldRequired = recipe.ingredientIds || [];
     const oldOptional = recipe.optionalIngredientIds || [];
 
-    const newRequired = unique(oldRequired.map((id) => remapId(id, productMap)));
-    const newOptional = unique(oldOptional.map((id) => remapId(id, productMap)));
-
     totalOldIds += oldRequired.length + oldOptional.length;
 
-    oldRequired.forEach((oldId, index) => {
-      if (oldId !== newRequired[index]) totalChangedIds++;
+    const remapList = (ids: string[]) =>
+      ids.map((id) => {
+        const result = remapId(id, productLookup, canonicalLookup);
+        reasons.set(result.reason, (reasons.get(result.reason) || 0) + 1);
 
-      const mapped = remapId(oldId, productMap);
-      if (mapped === oldId && !productMap.has(normalize(oldId))) {
-        notFound.set(oldId, (notFound.get(oldId) || 0) + 1);
-      }
-    });
+        if (result.newId !== id) totalChangedIds++;
 
-    oldOptional.forEach((oldId, index) => {
-      if (oldId !== newOptional[index]) totalChangedIds++;
+        if (result.reason === "not_found") {
+          notFound.set(id, (notFound.get(id) || 0) + 1);
+        }
 
-      const mapped = remapId(oldId, productMap);
-      if (mapped === oldId && !productMap.has(normalize(oldId))) {
-        notFound.set(oldId, (notFound.get(oldId) || 0) + 1);
-      }
-    });
+        if (result.newId !== id && samples.length < 80) {
+          samples.push(`${id} -> ${result.newId}${result.productName ? ` (${result.productName})` : ""}`);
+        }
+
+        return result.newId;
+      });
+
+    const newRequired = unique(remapList(oldRequired));
+    const requiredSet = new Set(newRequired);
+    const newOptional = unique(remapList(oldOptional)).filter((id) => !requiredSet.has(id));
 
     const changed =
       JSON.stringify(oldRequired) !== JSON.stringify(newRequired) ||
@@ -325,42 +332,25 @@ async function syncRecipeIngredientIds() {
 
     changedRecipes++;
 
-    const searchTitle = normalizeText(recipe.title || "");
-
-    const searchText = normalizeText(
-      [
-        recipe.title,
-        recipe.category,
-        recipe.cuisine,
-        recipe.description,
-        ...newRequired,
-        ...newOptional,
-      ]
-        .filter(Boolean)
-        .join(" ")
-    );
-
     if (!DRY_RUN) {
       await setDoc(
         doc(db, "recipes", recipe.id),
         {
-          ...recipe,
           ingredientIds: newRequired,
           optionalIngredientIds: newOptional,
-          searchTitle,
-          searchText,
+          searchTitle: normalizeText(recipe.title || ""),
+          searchText: buildSearchText(recipe, newRequired, newOptional),
           updatedAt: serverTimestamp(),
         },
         { merge: true }
       );
-    }
 
-    if (changedRecipes % 100 === 0) {
-      console.log(
-        `Обработано изменений: ${changedRecipes}, режим: ${
-          DRY_RUN ? "проверка" : "запись"
-        }`
-      );
+      writtenRecipes++;
+
+      if (writtenRecipes % WRITE_LOG_EVERY === 0) {
+        console.log(`Записано рецептов: ${writtenRecipes}`);
+        await sleep(WRITE_PAUSE_MS);
+      }
     }
   }
 
@@ -370,20 +360,28 @@ async function syncRecipeIngredientIds() {
   console.log(`Без изменений: ${unchangedRecipes}`);
   console.log(`Всего ingredientIds: ${totalOldIds}`);
   console.log(`Замен ingredientIds: ${totalChangedIds}`);
-  console.log(`Не найдено уникальных старых id: ${notFound.size}`);
+  console.log(`Записано в Firebase: ${DRY_RUN ? 0 : writtenRecipes}`);
+  console.log("");
 
-  console.log("Топ не найденных:");
+  console.log("Причины сопоставления:");
+  Array.from(reasons.entries())
+    .sort((a, b) => b[1] - a[1])
+    .forEach(([reason, count]) => console.log(`${reason}: ${count}`));
+  console.log("");
+
+  console.log(`Не найдено уникальных старых id: ${notFound.size}`);
   Array.from(notFound.entries())
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 200)
-    .forEach(([id, count]) => {
-      console.log(`${id}: ${count}`);
-    });
+    .slice(0, 120)
+    .forEach(([id, count]) => console.log(`${id}: ${count}`));
+  console.log("");
+
+  console.log("Примеры замен:");
+  samples.forEach((item) => console.log(item));
+  console.log("");
 
   if (DRY_RUN) {
-    console.log("");
-    console.log("Это была проверка.");
-    console.log("Если результат лучше, поменяй:");
+    console.log("Это была проверка. Если цифры нормальные, поменяй в файле:");
     console.log("const DRY_RUN = true;");
     console.log("на:");
     console.log("const DRY_RUN = false;");

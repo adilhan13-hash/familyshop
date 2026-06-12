@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import BottomNav from "../../components/BottomNav";
 import { useFamilyAuth } from "../../components/AuthProvider";
@@ -11,6 +12,7 @@ import {
   deleteDoc,
   doc,
   endAt,
+  getDoc,
   getDocs,
   limit,
   onSnapshot,
@@ -28,6 +30,9 @@ type FridgeItem = {
   name: string;
   productId?: string;
   ingredientId?: string;
+  productName?: string;
+  icon?: string;
+  category?: string;
 };
 
 type Product = {
@@ -36,7 +41,9 @@ type Product = {
   name: string;
   category?: string;
   ingredientId?: string;
+  aliases?: string[];
   search?: string[];
+  mergedIds?: string[];
 };
 
 type Recipe = {
@@ -72,8 +79,15 @@ type MatchResult = {
   total: number;
 };
 
+type IngredientAlias = {
+  icon: string;
+  name: string;
+  productId?: string;
+  category?: string;
+};
+
 function normalizeText(value: string) {
-  return value
+  return String(value || "")
     .toLowerCase()
     .replace(/ё/g, "е")
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
@@ -81,36 +95,410 @@ function normalizeText(value: string) {
     .trim();
 }
 
-export default function AiCookPage() {
+function normalizeIngredientKey(value: string) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[’'`]/g, "")
+    .replace(/[^a-zа-я0-9]+/gi, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .trim();
+}
+
+function makeLabel(icon: string, name: string) {
+  return `${icon || "🛒"} ${name}`;
+}
+
+const ingredientAliases: Record<string, IngredientAlias> = {
+  // овощи / зелень
+  luk: { icon: "🧅", name: "Лук", productId: "luk" },
+  onion: { icon: "🧅", name: "Лук", productId: "luk" },
+  onions: { icon: "🧅", name: "Лук", productId: "luk" },
+  luk_repchatiy: {
+    icon: "🧅",
+    name: "Лук репчатый",
+    productId: "luk_repchatyy",
+  },
+  luk_repchatyy: {
+    icon: "🧅",
+    name: "Лук репчатый",
+    productId: "luk_repchatyy",
+  },
+  chesnok: { icon: "🧄", name: "Чеснок", productId: "chesnok" },
+  garlic: { icon: "🧄", name: "Чеснок", productId: "chesnok" },
+  pomidor: { icon: "🍅", name: "Помидор", productId: "pomidor" },
+  tomato: { icon: "🍅", name: "Помидор", productId: "pomidor" },
+  pomidory: { icon: "🍅", name: "Помидоры", productId: "pomidory" },
+  tomatoes: { icon: "🍅", name: "Помидоры", productId: "pomidory" },
+  pomidory_v_sobstvennom_soku: {
+    icon: "🍅",
+    name: "Помидоры в собственном соку",
+  },
+  tomatniy_sok: { icon: "🍅", name: "Томатный сок" },
+  tomatnyy_sok: { icon: "🍅", name: "Томатный сок" },
+  tomatnaya_pasta: { icon: "🍅", name: "Томатная паста" },
+  kartofel: { icon: "🥔", name: "Картофель", productId: "kartofel" },
+  kartofel_otvarnoy: { icon: "🥔", name: "Отварной картофель" },
+  potato: { icon: "🥔", name: "Картофель", productId: "kartofel" },
+  potatoes: { icon: "🥔", name: "Картофель", productId: "kartofel" },
+  morkov: { icon: "🥕", name: "Морковь", productId: "morkov" },
+  carrot: { icon: "🥕", name: "Морковь", productId: "morkov" },
+  carrots: { icon: "🥕", name: "Морковь", productId: "morkov" },
+  morkov_po_koreyski: { icon: "🥕", name: "Морковь по-корейски" },
+  svekla: { icon: "🟣", name: "Свекла" },
+  kapusta: { icon: "🥬", name: "Капуста" },
+  kapusta_kvashenaya: { icon: "🥬", name: "Капуста квашеная" },
+  kvashenaya_kapusta: { icon: "🥬", name: "Капуста квашеная" },
+  kapusta_pekinskaya: { icon: "🥬", name: "Капуста пекинская" },
+  kabachki: { icon: "🥒", name: "Кабачки" },
+  ogurcy: { icon: "🥒", name: "Огурцы" },
+  ogurec: { icon: "🥒", name: "Огурец" },
+  salat: { icon: "🥬", name: "Салат" },
+  salat_latuk: { icon: "🥬", name: "Салат латук" },
+  zelen: { icon: "🌿", name: "Зелень" },
+  zelen_svejaya: { icon: "🌿", name: "Свежая зелень" },
+  greens: { icon: "🌿", name: "Зелень" },
+  kinza: { icon: "🌿", name: "Кинза" },
+  bazilik: { icon: "🌿", name: "Базилик" },
+  basil: { icon: "🌿", name: "Базилик" },
+  petrushka: { icon: "🌿", name: "Петрушка" },
+  parsley: { icon: "🌿", name: "Петрушка" },
+  ukrop: { icon: "🌿", name: "Укроп" },
+  dill: { icon: "🌿", name: "Укроп" },
+  stebel_seldereya: { icon: "🥬", name: "Стебель сельдерея" },
+  selderey: { icon: "🥬", name: "Сельдерей" },
+  schavel: { icon: "🥬", name: "Щавель" },
+
+  // мясо / птица / рыба / морепродукты
+  myaso: { icon: "🥩", name: "Мясо" },
+  beef: { icon: "🥩", name: "Говядина" },
+  govyadina: { icon: "🥩", name: "Говядина" },
+  baranina: { icon: "🥩", name: "Баранина" },
+  pork: { icon: "🥩", name: "Свинина" },
+  svinina: { icon: "🥩", name: "Свинина" },
+  kurica: { icon: "🍗", name: "Курица" },
+  chicken: { icon: "🍗", name: "Курица" },
+  kurinoe_file: { icon: "🍗", name: "Куриное филе" },
+  kurinaya_grudka: { icon: "🍗", name: "Куриная грудка" },
+  kurinaya_pechen: { icon: "🍗", name: "Куриная печень" },
+  pechen_kurinaya: { icon: "🍗", name: "Куриная печень" },
+  svino_govyajiy_farsh: { icon: "🥩", name: "Свино-говяжий фарш" },
+  svino_govyazhiy_farsh: { icon: "🥩", name: "Свино-говяжий фарш" },
+  govyazhiy_farsh: { icon: "🥩", name: "Говяжий фарш" },
+  farsh_govyazhiy: { icon: "🥩", name: "Говяжий фарш" },
+  farsh: { icon: "🥩", name: "Фарш" },
+  bekon: { icon: "🥓", name: "Бекон" },
+  bacon: { icon: "🥓", name: "Бекон" },
+  vetchina: { icon: "🥓", name: "Ветчина" },
+  krevetki: { icon: "🦐", name: "Креветки" },
+  shrimps: { icon: "🦐", name: "Креветки" },
+  shrimp: { icon: "🦐", name: "Креветки" },
+
+  // молочка / яйца / сыр
+  yayco: { icon: "🥚", name: "Яйцо" },
+  yayco_kurinoe: { icon: "🥚", name: "Яйцо" },
+  yayca: { icon: "🥚", name: "Яйца" },
+  yayca_kurinye: { icon: "🥚", name: "Яйца" },
+  yayca_varenye: { icon: "🥚", name: "Варёные яйца" },
+  yaichniy_belok: { icon: "🥚", name: "Яичный белок" },
+  yaichniy_jeltok: { icon: "🥚", name: "Яичный желток" },
+  eggs: { icon: "🥚", name: "Яйца" },
+  egg: { icon: "🥚", name: "Яйцо" },
+  moloko: { icon: "🥛", name: "Молоко" },
+  milk: { icon: "🥛", name: "Молоко" },
+  kefir: { icon: "🥛", name: "Кефир" },
+  slivki: { icon: "🥛", name: "Сливки" },
+  cream: { icon: "🥛", name: "Сливки" },
+  smetana: { icon: "🥛", name: "Сметана" },
+  yogurt_naturalniy: { icon: "🥛", name: "Йогурт натуральный" },
+  naturalnyy_yogurt: { icon: "🥛", name: "Йогурт натуральный" },
+  naturalnogo_yogurta: { icon: "🥛", name: "Йогурт натуральный" },
+  tvorog: { icon: "🥛", name: "Творог" },
+  syr: { icon: "🧀", name: "Сыр" },
+  cheese: { icon: "🧀", name: "Сыр" },
+  syr_tverdiy: { icon: "🧀", name: "Сыр твердый" },
+  syr_tverdyy: { icon: "🧀", name: "Сыр твердый" },
+  hard_cheese: { icon: "🧀", name: "Сыр твердый" },
+  syr_tvorojniy: { icon: "🧀", name: "Сыр творожный" },
+  syr_tvorozhnyy: { icon: "🧀", name: "Сыр творожный" },
+  syr_kopcheniy: { icon: "🧀", name: "Копчёный сыр" },
+  syr_mocarella: { icon: "🧀", name: "Сыр моцарелла" },
+  mocarella: { icon: "🧀", name: "Моцарелла" },
+  mozzarella: { icon: "🧀", name: "Моцарелла" },
+  syr_parmezan: { icon: "🧀", name: "Сыр пармезан" },
+  parmesan: { icon: "🧀", name: "Пармезан" },
+
+  // крупы / мука / хлеб / тесто
+  ris: { icon: "🍚", name: "Рис" },
+  rice: { icon: "🍚", name: "Рис" },
+  ris_basmati: { icon: "🍚", name: "Рис басмати" },
+  muka: { icon: "🌾", name: "Мука" },
+  flour: { icon: "🌾", name: "Мука" },
+  muki: { icon: "🌾", name: "Мука" },
+  muka_pshenichnaya: { icon: "🌾", name: "Мука пшеничная" },
+  krahmal: { icon: "🌽", name: "Крахмал" },
+  kukuruzniy_krahmal: { icon: "🌽", name: "Кукурузный крахмал" },
+  krupa: { icon: "🌾", name: "Крупа" },
+  kunjut: { icon: "🌾", name: "Кунжут" },
+  lavash_tonkiy: { icon: "🫓", name: "Лаваш тонкий" },
+  lavash: { icon: "🫓", name: "Лаваш" },
+  testo: { icon: "🥟", name: "Тесто" },
+  lapsha: { icon: "🍜", name: "Лапша" },
+  listy_lazani: { icon: "🍝", name: "Листы лазаньи" },
+  makaronnye_izdeliya: { icon: "🍝", name: "Макароны" },
+
+  // масла / соусы / консервы
+  maslo_slivochnoe: { icon: "🧈", name: "Масло сливочное" },
+  slivochnoe_maslo: { icon: "🧈", name: "Масло сливочное" },
+  maslo_rastitelnoe: { icon: "🫒", name: "Масло растительное" },
+  maslo_podsolnechnoe: { icon: "🫒", name: "Масло подсолнечное" },
+  maslo_olivkovoe: { icon: "🫒", name: "Масло оливковое" },
+  oil: { icon: "🫒", name: "Масло" },
+  mayonez: { icon: "🥫", name: "Майонез" },
+  mayonnaise: { icon: "🥫", name: "Майонез" },
+  ketchup: { icon: "🍅", name: "Кетчуп" },
+  uksus: { icon: "🍾", name: "Уксус" },
+  uksus_vinniy_krasniy: { icon: "🍷", name: "Красный винный уксус" },
+  fasol_konservirovannaya: { icon: "🥫", name: "Фасоль консервированная" },
+  kukuruza_konservirovannaya: { icon: "🌽", name: "Кукуруза консервированная" },
+  ananasy_konservirovannye: { icon: "🍍", name: "Ананасы консервированные" },
+
+  // специи / сладкое / добавки
+  sol: { icon: "🧂", name: "Соль" },
+  salt: { icon: "🧂", name: "Соль" },
+  sahar: { icon: "🍬", name: "Сахар" },
+  sugar: { icon: "🍬", name: "Сахар" },
+  sahar_korichneviy: { icon: "🍬", name: "Сахар коричневый" },
+  saharnaya_pudra: { icon: "🍬", name: "Сахарная пудра" },
+  vanilin: { icon: "🧂", name: "Ванилин" },
+  vanil: { icon: "🧂", name: "Ваниль" },
+  soda: { icon: "🧂", name: "Сода" },
+  razryhlitel: { icon: "🧂", name: "Разрыхлитель" },
+  pepper: { icon: "🌶️", name: "Перец" },
+  black_pepper: { icon: "🧂", name: "Чёрный перец" },
+  perec: { icon: "🌶️", name: "Перец" },
+  perec_cherniy_molotiy: { icon: "🧂", name: "Перец черный молотый" },
+  perec_chernyy_molotyy: { icon: "🧂", name: "Перец черный молотый" },
+  perec_krasniy_jguchiy: { icon: "🌶️", name: "Перец красный жгучий" },
+  lavroviy_list: { icon: "🍃", name: "Лавровый лист" },
+  lavrovyy_list: { icon: "🍃", name: "Лавровый лист" },
+  hmeli_suneli: { icon: "🧂", name: "Хмели-сунели" },
+  muskatniy_oreh: { icon: "🌰", name: "Мускатный орех" },
+  hren_stoloviy: { icon: "🌱", name: "Хрен" },
+  shokolad_temniy: { icon: "🍫", name: "Шоколад темный" },
+  limonniy_sok: { icon: "🍋", name: "Лимонный сок" },
+  ekstrakt_mindalya: { icon: "🌰", name: "Экстракт миндаля" },
+  greckie_orehi: { icon: "🥜", name: "Грецкие орехи" },
+  izyum: { icon: "🍇", name: "Изюм" },
+  fruktoza: { icon: "🟡", name: "Фруктоза" },
+  banany: { icon: "🍌", name: "Бананы" },
+  varene: { icon: "🍯", name: "Варенье" },
+};
+
+function ToggleBlock({
+  title,
+  count,
+  open,
+  onToggle,
+  children,
+}: {
+  title: string;
+  count: number | string;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 14 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="rounded-3xl bg-white p-5 shadow-sm"
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center justify-between gap-3 text-left"
+      >
+        <div className="flex items-center gap-2">
+          <h2 className="text-xl font-bold">{title}</h2>
+          <span className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-600">
+            {count}
+          </span>
+        </div>
+        <span className="text-xl text-slate-400">{open ? "▲" : "▼"}</span>
+      </button>
+
+      <AnimatePresence initial={false}>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="mt-4">{children}</div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
+
+export default function AiPage() {
   const { familyId, appUser } = useFamilyAuth();
 
+  const [products, setProducts] = useState<Product[]>([]);
   const [fridgeItems, setFridgeItems] = useState<FridgeItem[]>([]);
-  const [productsMap, setProductsMap] = useState<Record<string, Product>>({});
-  const [search, setSearch] = useState("");
-
-  const [searchRecipes, setSearchRecipes] = useState<Recipe[]>([]);
   const [suggestedRecipes, setSuggestedRecipes] = useState<Recipe[]>([]);
+  const [searchRecipes, setSearchRecipes] = useState<Recipe[]>([]);
   const [favoriteRecipes, setFavoriteRecipes] = useState<Recipe[]>([]);
   const [cookingRecipes, setCookingRecipes] = useState<CookingRecipe[]>([]);
 
-  const [selectedRecipe, setSelectedRecipe] = useState<MatchResult | null>(null);
+  const [search, setSearch] = useState("");
+  const [message, setMessage] = useState("");
+  const [selectedRecipe, setSelectedRecipe] = useState<MatchResult | null>(
+    null,
+  );
+
+  const [loadingProducts, setLoadingProducts] = useState(true);
+  const [loadingFridge, setLoadingFridge] = useState(true);
+  const [loadingSuggested, setLoadingSuggested] = useState(true);
+  const [loadingSearch, setLoadingSearch] = useState(false);
+  const [loadingFavorites, setLoadingFavorites] = useState(true);
 
   const [showCooking, setShowCooking] = useState(true);
-  const [showSuggested, setShowSuggested] = useState(false);
+  const [showSuggested, setShowSuggested] = useState(true);
+  const [showSearch, setShowSearch] = useState(true);
   const [showFavorites, setShowFavorites] = useState(false);
   const [showFridge, setShowFridge] = useState(false);
 
   const [addedAnimation, setAddedAnimation] = useState(false);
   const [cookingAnimation, setCookingAnimation] = useState(false);
 
-  const [loadingFridge, setLoadingFridge] = useState(true);
-  const [loadingProducts, setLoadingProducts] = useState(true);
-  const [loadingSearch, setLoadingSearch] = useState(false);
-  const [loadingSuggested, setLoadingSuggested] = useState(false);
-  const [loadingFavorites, setLoadingFavorites] = useState(true);
-  const [loadingCooking, setLoadingCooking] = useState(true);
+  const productsMap = useMemo(() => {
+    const map: Record<string, Product> = {};
 
-  const [message, setMessage] = useState("");
+    for (const product of products) {
+      const keys = [
+        product.id,
+        product.ingredientId,
+        ...(product.search || []),
+        ...(product.aliases || []),
+        ...(product.mergedIds || []),
+        product.name,
+      ].filter(Boolean) as string[];
+
+      for (const key of keys) {
+        map[key] = product;
+        map[normalizeIngredientKey(key)] = product;
+        map[normalizeText(key)] = product;
+      }
+    }
+
+    return map;
+  }, [products]);
+
+  function getIngredientInfo(id: string) {
+    const raw = String(id || "").trim();
+    const key = normalizeIngredientKey(raw);
+    const textKey = normalizeText(raw);
+
+    const directProduct =
+      productsMap[raw] ||
+      productsMap[key] ||
+      productsMap[textKey] ||
+      productsMap[raw.replace(/-/g, "_")] ||
+      productsMap[raw.replace(/_/g, "-")];
+
+    if (directProduct) {
+      return {
+        icon: directProduct.icon || "🛒",
+        name: directProduct.name,
+        productId: directProduct.id,
+        category: directProduct.category || "Другое",
+      };
+    }
+
+    const alias = ingredientAliases[key] || ingredientAliases[textKey];
+
+    if (alias) {
+      const aliasProduct = alias.productId
+        ? productsMap[alias.productId] ||
+          productsMap[normalizeIngredientKey(alias.productId)]
+        : null;
+
+      return {
+        icon: aliasProduct?.icon || alias.icon || "🛒",
+        name: aliasProduct?.name || alias.name,
+        productId: aliasProduct?.id || alias.productId || key,
+        category: aliasProduct?.category || alias.category || "Другое",
+      };
+    }
+
+    const prettyName = raw
+      .replace(/_/g, " ")
+      .replace(/-/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^\w/, (letter) => letter.toUpperCase());
+
+    return {
+      icon: "🛒",
+      name: prettyName || raw,
+      productId: key || raw,
+      category: "Другое",
+    };
+  }
+
+  function getProductLabel(id: string) {
+    const ingredient = getIngredientInfo(id);
+    return makeLabel(ingredient.icon, ingredient.name);
+  }
+
+  function getComparableIds(id: string) {
+    const info = getIngredientInfo(id);
+    return Array.from(
+      new Set(
+        [
+          id,
+          info.productId,
+          normalizeIngredientKey(id),
+          normalizeIngredientKey(info.productId || ""),
+          normalizeText(id),
+          normalizeText(info.name),
+        ].filter(Boolean),
+      ),
+    );
+  }
+
+  useEffect(() => {
+    const productsQuery = query(collection(db, "products"));
+
+    const unsubscribe = onSnapshot(productsQuery, (snapshot) => {
+      const items: Product[] = [];
+
+      snapshot.forEach((document) => {
+        const data = document.data();
+        items.push({
+          id: data.id || document.id,
+          icon: data.icon || "🛒",
+          name: data.name || document.id,
+          category: data.category || "Другое",
+          ingredientId: data.ingredientId,
+          aliases: data.aliases || [],
+          search: data.search || [],
+          mergedIds: data.mergedIds || [],
+        });
+      });
+
+      setProducts(items);
+      setLoadingProducts(false);
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   useEffect(() => {
     if (!familyId) return;
@@ -122,52 +510,54 @@ export default function AiCookPage() {
 
         snapshot.forEach((document) => {
           const data = document.data();
-
           if (data.name) {
             items.push({
               id: document.id,
               name: data.name,
               productId: data.productId,
               ingredientId: data.ingredientId,
+              productName: data.productName,
+              icon: data.icon,
+              category: data.category,
             });
           }
         });
 
         setFridgeItems(items);
         setLoadingFridge(false);
-      }
+      },
     );
 
     return () => unsubscribe();
   }, [familyId]);
 
   useEffect(() => {
-    const productsQuery = query(
-      collection(db, "products"),
-      orderBy("name"),
-      limit(3000)
-    );
+    const recipesQuery = query(collection(db, "recipes"), limit(700));
 
-    const unsubscribe = onSnapshot(productsQuery, (snapshot) => {
-      const map: Record<string, Product> = {};
+    const unsubscribe = onSnapshot(recipesQuery, (snapshot) => {
+      const items: Recipe[] = [];
 
       snapshot.forEach((document) => {
         const data = document.data();
-
-        if (data.name) {
-          map[document.id] = {
-            id: document.id,
-            icon: data.icon || "🛒",
-            name: data.name,
-            category: data.category,
-            ingredientId: data.ingredientId || document.id,
-            search: Array.isArray(data.search) ? data.search : [],
-          };
-        }
+        items.push({
+          id: data.id || document.id,
+          title: data.title || "Без названия",
+          category: data.category || "Рецепт",
+          cuisine: data.cuisine,
+          difficulty: data.difficulty,
+          cookingTime: data.cookingTime,
+          cookingTimeText: data.cookingTimeText,
+          time: data.time,
+          description: data.description,
+          ingredientIds: data.ingredientIds || [],
+          optionalIngredientIds: data.optionalIngredientIds || [],
+          steps: data.steps || [],
+          searchTitle: data.searchTitle || normalizeText(data.title || ""),
+        });
       });
 
-      setProductsMap(map);
-      setLoadingProducts(false);
+      setSuggestedRecipes(items);
+      setLoadingSuggested(false);
     });
 
     return () => unsubscribe();
@@ -183,18 +573,24 @@ export default function AiCookPage() {
 
         snapshot.forEach((document) => {
           const data = document.data();
-
-          if (data.title) {
-            items.push({
-              id: document.id,
-              ...(data as Omit<Recipe, "id">),
-            });
-          }
+          items.push({
+            id: data.id || document.id,
+            title: data.title || "Без названия",
+            category: data.category || "Рецепт",
+            cookingTime: data.cookingTime,
+            cookingTimeText: data.cookingTimeText,
+            time: data.time,
+            description: data.description,
+            ingredientIds: data.ingredientIds || [],
+            optionalIngredientIds: data.optionalIngredientIds || [],
+            steps: data.steps || [],
+            searchTitle: data.searchTitle,
+          });
         });
 
         setFavoriteRecipes(items);
         setLoadingFavorites(false);
-      }
+      },
     );
 
     return () => unsubscribe();
@@ -203,109 +599,107 @@ export default function AiCookPage() {
   useEffect(() => {
     if (!familyId) return;
 
-    const unsubscribe = onSnapshot(
+    const cookingQuery = query(
       collection(db, "families", familyId, "cookingNow"),
-      (snapshot) => {
-        const items: CookingRecipe[] = [];
-
-        snapshot.forEach((document) => {
-          const data = document.data();
-
-          if (data.title) {
-            items.push({
-              id: document.id,
-              recipeId: data.recipeId || document.id,
-              title: data.title,
-              category: data.category,
-              cookingTime: data.cookingTime,
-              score: data.score,
-            });
-          }
-        });
-
-        setCookingRecipes(items);
-        setLoadingCooking(false);
-      }
+      orderBy("createdAt", "desc"),
+      limit(20),
     );
+
+    const unsubscribe = onSnapshot(cookingQuery, (snapshot) => {
+      const items: CookingRecipe[] = [];
+
+      snapshot.forEach((document) => {
+        const data = document.data();
+        items.push({
+          id: document.id,
+          recipeId: data.recipeId || document.id,
+          title: data.title || "Без названия",
+          category: data.category || "Рецепт",
+          cookingTime: data.cookingTime || "",
+          score: data.score || 0,
+        });
+      });
+
+      setCookingRecipes(items);
+    });
 
     return () => unsubscribe();
   }, [familyId]);
 
-  const fridgeIngredientIds = useMemo(() => {
-    const ids = fridgeItems
-      .map((item) => item.ingredientId || item.productId)
-      .filter(Boolean) as string[];
-
-    return Array.from(new Set(ids));
-  }, [fridgeItems]);
-
   useEffect(() => {
-    async function loadSuggestedRecipes() {
-      setSuggestedRecipes([]);
+    const searchText = normalizeText(search);
 
-      if (fridgeIngredientIds.length === 0) return;
-
-      setLoadingSuggested(true);
-
-      try {
-        const recipesQuery = query(
-          collection(db, "recipes"),
-          where("ingredientIds", "array-contains-any", fridgeIngredientIds.slice(0, 30)),
-          limit(120)
-        );
-
-        const snapshot = await getDocs(recipesQuery);
-
-        const items: Recipe[] = snapshot.docs.map((document) => ({
-          id: document.id,
-          ...(document.data() as Omit<Recipe, "id">),
-        }));
-
-        setSuggestedRecipes(items);
-      } finally {
-        setLoadingSuggested(false);
-      }
+    if (searchText.length < 2) {
+      setSearchRecipes([]);
+      setLoadingSearch(false);
+      return;
     }
 
-    loadSuggestedRecipes();
-  }, [fridgeIngredientIds.join("|")]);
-
-  useEffect(() => {
     async function searchRecipesFromBook() {
-      const text = normalizeText(search);
-
-      setSearchRecipes([]);
-
-      if (text.length < 2) return;
-
-      setLoadingSearch(true);
-
       try {
+        setLoadingSearch(true);
+
         const recipesQuery = query(
           collection(db, "recipes"),
           orderBy("searchTitle"),
-          startAt(text),
-          endAt(text + "\uf8ff"),
-          limit(40)
+          startAt(searchText),
+          endAt(`${searchText}\uf8ff`),
+          limit(40),
         );
 
         const snapshot = await getDocs(recipesQuery);
 
-        const items: Recipe[] = snapshot.docs.map((document) => ({
-          id: document.id,
-          ...(document.data() as Omit<Recipe, "id">),
-        }));
+        const items: Recipe[] = snapshot.docs.map((document) => {
+          const data = document.data();
+          return {
+            id: data.id || document.id,
+            title: data.title || "Без названия",
+            category: data.category || "Рецепт",
+            cuisine: data.cuisine,
+            difficulty: data.difficulty,
+            cookingTime: data.cookingTime,
+            cookingTimeText: data.cookingTimeText,
+            time: data.time,
+            description: data.description,
+            ingredientIds: data.ingredientIds || [],
+            optionalIngredientIds: data.optionalIngredientIds || [],
+            steps: data.steps || [],
+            searchTitle: data.searchTitle || normalizeText(data.title || ""),
+          };
+        });
 
         setSearchRecipes(items);
+      } catch (error) {
+        console.error("AI recipe search error", error);
       } finally {
         setLoadingSearch(false);
       }
     }
 
     const timer = setTimeout(searchRecipesFromBook, 350);
-
     return () => clearTimeout(timer);
   }, [search]);
+
+  const fridgeIngredientIds = useMemo(() => {
+    const ids: string[] = [];
+
+    for (const item of fridgeItems) {
+      const rawValues = [
+        item.productId,
+        item.ingredientId,
+        item.productName,
+        item.name,
+        normalizeIngredientKey(item.name),
+        normalizeText(item.name),
+      ].filter(Boolean) as string[];
+
+      for (const value of rawValues) {
+        ids.push(...getComparableIds(value));
+      }
+    }
+
+    return Array.from(new Set(ids));
+  }, [fridgeItems, productsMap]);
 
   function buildMatch(recipe: Recipe): MatchResult {
     const fridgeSet = new Set(fridgeIngredientIds);
@@ -315,8 +709,14 @@ export default function AiCookPage() {
     const requiredIds = allIds.filter((id) => !optionalIds.has(id));
     const idsForScore = requiredIds.length > 0 ? requiredIds : allIds;
 
-    const haveIds = idsForScore.filter((id) => fridgeSet.has(id));
-    const missingIds = idsForScore.filter((id) => !fridgeSet.has(id));
+    const haveIds = idsForScore.filter((id) =>
+      getComparableIds(id).some((candidate) => fridgeSet.has(candidate)),
+    );
+
+    const missingIds = idsForScore.filter(
+      (id) =>
+        !getComparableIds(id).some((candidate) => fridgeSet.has(candidate)),
+    );
 
     const score =
       idsForScore.length === 0
@@ -333,13 +733,30 @@ export default function AiCookPage() {
   }
 
   const suggestedResults = useMemo(() => {
-    return suggestedRecipes
+    const uniqueByTitle = new Map<string, MatchResult>();
+
+    suggestedRecipes
       .map(buildMatch)
-      .filter((result) => result.haveIds.length > 0)
+      .filter((result) => result.total > 0 && result.score > 0)
       .sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score;
-        return a.missingIds.length - b.missingIds.length;
+        if (b.haveIds.length !== a.haveIds.length) {
+          return b.haveIds.length - a.haveIds.length;
+        }
+        if (a.missingIds.length !== b.missingIds.length) {
+          return a.missingIds.length - b.missingIds.length;
+        }
+        return a.recipe.title.localeCompare(b.recipe.title, "ru");
+      })
+      .forEach((result) => {
+        const titleKey = normalizeText(result.recipe.title);
+
+        if (!uniqueByTitle.has(titleKey)) {
+          uniqueByTitle.set(titleKey, result);
+        }
       });
+
+    return Array.from(uniqueByTitle.values()).slice(0, 30);
   }, [suggestedRecipes, fridgeIngredientIds]);
 
   const searchResults = useMemo(() => {
@@ -349,14 +766,6 @@ export default function AiCookPage() {
   const favoriteResults = useMemo(() => {
     return favoriteRecipes.map(buildMatch);
   }, [favoriteRecipes, fridgeIngredientIds]);
-
-  function getProductLabel(id: string) {
-    const product = productsMap[id];
-
-    if (!product) return id;
-
-    return `${product.icon || "🛒"} ${product.name}`;
-  }
 
   function getRecipeTime(recipe: Recipe) {
     if (recipe.cookingTimeText) return recipe.cookingTimeText;
@@ -369,12 +778,58 @@ export default function AiCookPage() {
     return favoriteRecipes.some((recipe) => recipe.id === recipeId);
   }
 
+  async function openRecipeById(recipeId: string) {
+    const cached = [
+      ...suggestedResults,
+      ...searchResults,
+      ...favoriteResults,
+    ].find((result) => result.recipe.id === recipeId);
+
+    if (cached) {
+      setSelectedRecipe(cached);
+      setMessage("");
+      return;
+    }
+
+    try {
+      const recipeDoc = await getDoc(doc(db, "recipes", recipeId));
+
+      if (!recipeDoc.exists()) {
+        setMessage("⚠️ Рецепт не найден в базе.");
+        return;
+      }
+
+      const data = recipeDoc.data();
+      const recipe: Recipe = {
+        id: data.id || recipeDoc.id,
+        title: data.title || "Без названия",
+        category: data.category || "Рецепт",
+        cuisine: data.cuisine,
+        difficulty: data.difficulty,
+        cookingTime: data.cookingTime,
+        cookingTimeText: data.cookingTimeText,
+        time: data.time,
+        description: data.description,
+        ingredientIds: data.ingredientIds || [],
+        optionalIngredientIds: data.optionalIngredientIds || [],
+        steps: data.steps || [],
+        searchTitle: data.searchTitle || normalizeText(data.title || ""),
+      };
+
+      setSelectedRecipe(buildMatch(recipe));
+      setMessage("");
+    } catch (error) {
+      console.error("OPEN RECIPE ERROR", error);
+      setMessage("⚠️ Не получилось открыть рецепт.");
+    }
+  }
+
   async function toggleFavoriteRecipe(recipe: Recipe) {
     if (!familyId) return;
 
     if (isFavoriteRecipe(recipe.id)) {
       await deleteDoc(
-        doc(db, "families", familyId, "favoriteRecipes", recipe.id)
+        doc(db, "families", familyId, "favoriteRecipes", recipe.id),
       );
       return;
     }
@@ -385,7 +840,7 @@ export default function AiCookPage() {
         ...recipe,
         createdAt: serverTimestamp(),
       },
-      { merge: true }
+      { merge: true },
     );
   }
 
@@ -404,7 +859,7 @@ export default function AiCookPage() {
         userName: appUser?.displayName || "Без имени",
         createdAt: serverTimestamp(),
       },
-      { merge: true }
+      { merge: true },
     );
 
     await addActivity({
@@ -418,67 +873,25 @@ export default function AiCookPage() {
       itemName: result.recipe.title,
     });
 
+    setMessage(`👨‍🍳 Будем готовить: ${result.recipe.title}`);
     setCookingAnimation(true);
-    setShowCooking(true);
-
-    setTimeout(() => {
-      setCookingAnimation(false);
-    }, 2000);
-  }
-
-  async function finishCooking(recipe: CookingRecipe) {
-    if (!familyId) return;
-
-    await deleteDoc(doc(db, "families", familyId, "cookingNow", recipe.id));
-
-    await addActivity({
-      familyId,
-      userId: appUser?.uid || "unknown",
-      userName: appUser?.displayName || "Без имени",
-      type: "ai_finish_cooking",
-      title: "Приготовил блюдо",
-      message: recipe.title,
-      emoji: "✅",
-      itemName: recipe.title,
-    });
-
-    setMessage(`✅ Приготовили: ${recipe.title}`);
-  }
-
-  async function removeCooking(recipe: CookingRecipe) {
-    if (!familyId) return;
-
-    await deleteDoc(doc(db, "families", familyId, "cookingNow", recipe.id));
-
-    await addActivity({
-      familyId,
-      userId: appUser?.uid || "unknown",
-      userName: appUser?.displayName || "Без имени",
-      type: "ai_remove_cooking",
-      title: "Убрал из готовки",
-      message: recipe.title,
-      emoji: "🗑️",
-      itemName: recipe.title,
-    });
+    setTimeout(() => setCookingAnimation(false), 2000);
   }
 
   async function addMissingToShopping(result: MatchResult) {
     if (!familyId) return;
 
     for (const ingredientId of result.missingIds) {
-      const product = productsMap[ingredientId];
-
-      const name = product
-        ? `${product.icon || "🛒"} ${product.name}`
-        : ingredientId;
+      const ingredient = getIngredientInfo(ingredientId);
+      const name = makeLabel(ingredient.icon, ingredient.name);
 
       await addDoc(collection(db, "families", familyId, "shopping"), {
         name,
-        productName: product?.name || ingredientId,
-        icon: product?.icon || "🛒",
-        productId: ingredientId,
-        ingredientId,
-        category: product?.category || "Другое",
+        productName: ingredient.name,
+        icon: ingredient.icon,
+        productId: ingredient.productId || ingredientId,
+        ingredientId: ingredient.productId || ingredientId,
+        category: ingredient.category || "Другое",
         source: "AI Cook",
         recipeId: result.recipe.id,
         createdAt: serverTimestamp(),
@@ -499,64 +912,32 @@ export default function AiCookPage() {
     await startCooking(result);
 
     setMessage(
-      `✅ Недостающее для "${result.recipe.title}" добавлено в покупки. Блюдо добавлено в “Будем готовить”.`
+      `✅ Недостающее для "${result.recipe.title}" добавлено в покупки.`,
     );
-
     setAddedAnimation(true);
-    setShowCooking(true);
-
-    setTimeout(() => {
-      setAddedAnimation(false);
-    }, 2000);
+    setTimeout(() => setAddedAnimation(false), 2000);
   }
 
-  function ToggleBlock({
-    title,
-    count,
-    open,
-    onToggle,
-    children,
-  }: {
-    title: string;
-    count: number;
-    open: boolean;
-    onToggle: () => void;
-    children: React.ReactNode;
-  }) {
-    return (
-      <motion.div
-        initial={{ opacity: 0, y: 14 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="rounded-3xl bg-white p-5 shadow-sm"
-      >
-        <button
-          onClick={onToggle}
-          className="flex w-full items-center justify-between text-left"
-        >
-          <div className="flex items-center gap-2">
-            <h2 className="text-xl font-bold">{title}</h2>
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-600">
-              {count}
-            </span>
-          </div>
+  async function markCookingDone(item: CookingRecipe) {
+    if (!familyId) return;
 
-          <span className="text-xl text-slate-400">{open ? "▼" : "▶"}</span>
-        </button>
+    await deleteDoc(doc(db, "families", familyId, "cookingNow", item.id));
 
-        <AnimatePresence>
-          {open && (
-            <motion.div
-              initial={{ opacity: 0, height: 0, y: -8 }}
-              animate={{ opacity: 1, height: "auto", y: 0 }}
-              exit={{ opacity: 0, height: 0, y: -8 }}
-              className="overflow-hidden"
-            >
-              <div className="mt-4">{children}</div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </motion.div>
-    );
+    await addActivity({
+      familyId,
+      userId: appUser?.uid || "unknown",
+      userName: appUser?.displayName || "Без имени",
+      type: "ai_cooking_done",
+      title: "Приготовил",
+      message: item.title,
+      emoji: "✅",
+      itemName: item.title,
+    });
+  }
+
+  async function removeCooking(item: CookingRecipe) {
+    if (!familyId) return;
+    await deleteDoc(doc(db, "families", familyId, "cookingNow", item.id));
   }
 
   function RecipeCard({ result }: { result: MatchResult }) {
@@ -579,7 +960,7 @@ export default function AiCookPage() {
           <div className="flex items-start justify-between gap-3 pr-7">
             <div>
               <h3 className="text-lg font-semibold text-slate-900">
-                🍳 {recipe.title}
+                🔍 {recipe.title}
               </h3>
 
               <p className="mt-1 text-sm text-slate-500">
@@ -593,8 +974,8 @@ export default function AiCookPage() {
                 result.score === 100
                   ? "bg-green-100 text-green-700"
                   : result.score >= 70
-                  ? "bg-orange-100 text-orange-700"
-                  : "bg-slate-100 text-slate-600"
+                    ? "bg-orange-100 text-orange-700"
+                    : "bg-slate-100 text-slate-600"
               }`}
             >
               {result.score}%
@@ -607,8 +988,8 @@ export default function AiCookPage() {
                 result.score === 100
                   ? "bg-green-500"
                   : result.score >= 70
-                  ? "bg-orange-400"
-                  : "bg-slate-400"
+                    ? "bg-orange-400"
+                    : "bg-slate-400"
               }`}
               style={{ width: `${result.score}%` }}
             />
@@ -623,8 +1004,12 @@ export default function AiCookPage() {
         </motion.button>
 
         <button
-          onClick={() => toggleFavoriteRecipe(recipe)}
-          className="absolute right-3 top-3 rounded-full bg-white/90 px-1 text-lg shadow-sm"
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            toggleFavoriteRecipe(recipe);
+          }}
+          className="absolute right-3 top-3 rounded-full bg-white/90 px-2 py-1 text-lg shadow-sm"
         >
           {favorite ? "⭐" : "☆"}
         </button>
@@ -658,35 +1043,53 @@ export default function AiCookPage() {
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="🔍 Найти рецепт от 2 букв"
-            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 outline-none"
+            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base outline-none focus:border-blue-400"
           />
 
           <AnimatePresence>
             {message && (
               <motion.div
-                initial={{ opacity: 0, y: -8, scale: 0.98 }}
+                initial={{ opacity: 0, y: 12, scale: 0.98 }}
                 animate={{ opacity: 1, y: 0, scale: 1 }}
                 exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                className="rounded-3xl bg-green-100 px-4 py-3 text-sm text-green-700"
+                className="rounded-2xl bg-blue-50 p-3 text-sm font-medium text-blue-700"
               >
                 {message}
               </motion.div>
             )}
           </AnimatePresence>
 
-          {isSearching && (
-            <motion.div
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="rounded-3xl bg-white p-5 shadow-sm"
-            >
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-xl font-bold">🔍 Результаты поиска</h2>
-                <span className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-600">
-                  {searchResults.length}
-                </span>
-              </div>
+          <AnimatePresence>
+            {addedAnimation && (
+              <motion.div
+                initial={{ opacity: 0, y: 18, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -8, scale: 0.98 }}
+                className="rounded-2xl bg-green-100 p-3 text-center text-sm font-medium text-green-700"
+              >
+                ✅ Добавлено в покупки и в “Будем готовить”
+              </motion.div>
+            )}
 
+            {cookingAnimation && (
+              <motion.div
+                initial={{ opacity: 0, y: 18, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -8, scale: 0.98 }}
+                className="rounded-2xl bg-blue-100 p-3 text-center text-sm font-medium text-blue-700"
+              >
+                👨‍🍳 Блюдо отмечено как “Будем готовить”
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {isSearching && (
+            <ToggleBlock
+              title="🔎 Результаты поиска"
+              count={searchResults.length}
+              open={showSearch}
+              onToggle={() => setShowSearch((prev) => !prev)}
+            >
               {loadingSearch ? (
                 <p className="text-sm text-slate-500">Ищу рецепты...</p>
               ) : searchResults.length === 0 ? (
@@ -698,61 +1101,76 @@ export default function AiCookPage() {
                   ))}
                 </div>
               )}
-            </motion.div>
+            </ToggleBlock>
           )}
+
+          <ToggleBlock
+            title="👨‍🍳 Будем готовить"
+            count={cookingRecipes.length}
+            open={showCooking}
+            onToggle={() => setShowCooking((prev) => !prev)}
+          >
+            {cookingRecipes.length === 0 ? (
+              <p className="text-sm text-slate-500">
+                Пока нет выбранных блюд. Открой рецепт и нажми “Будем готовить”.
+              </p>
+            ) : (
+              <AnimatePresence mode="popLayout">
+                <div className="space-y-3">
+                  {cookingRecipes.map((recipe) => (
+                    <motion.div
+                      key={recipe.id}
+                      layout
+                      initial={{ opacity: 0, y: 12, scale: 0.98 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, y: -8, scale: 0.98 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={() => openRecipeById(recipe.recipeId)}
+                      className="cursor-pointer rounded-2xl bg-slate-50 p-4"
+                    >
+                      <h3 className="text-base font-semibold text-slate-900">
+                        🔍 {recipe.title}
+                      </h3>
+                      <p className="mt-1 text-sm text-slate-500">
+                        {recipe.category || "Рецепт"}
+                        {recipe.cookingTime ? ` · ${recipe.cookingTime}` : ""}
+                        {typeof recipe.score === "number"
+                          ? ` · ${recipe.score}%`
+                          : ""}
+                      </p>
+
+                      <div className="mt-3 flex gap-2">
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            markCookingDone(recipe);
+                          }}
+                          className="flex-1 rounded-xl bg-green-500 px-3 py-2 text-sm font-medium text-white"
+                        >
+                          ✅ Приготовили
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            removeCooking(recipe);
+                          }}
+                          className="flex-1 rounded-xl bg-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+                        >
+                          Убрать
+                        </button>
+                      </div>
+                    </motion.div>
+                  ))}
+                </div>
+              </AnimatePresence>
+            )}
+          </ToggleBlock>
 
           {!isSearching && (
             <>
-              <ToggleBlock
-                title="👨‍🍳 Будем готовить"
-                count={cookingRecipes.length}
-                open={showCooking}
-                onToggle={() => setShowCooking((prev) => !prev)}
-              >
-                {loadingCooking ? (
-                  <p className="text-sm text-slate-500">Загрузка...</p>
-                ) : cookingRecipes.length === 0 ? (
-                  <p className="text-sm text-slate-500">
-                    Пока ничего не выбрано. Открой рецепт и нажми “Будем готовить”.
-                  </p>
-                ) : (
-                  <div className="space-y-3">
-                    {cookingRecipes.map((recipe) => (
-                      <div
-                        key={recipe.id}
-                        className="rounded-2xl bg-slate-50 p-4"
-                      >
-                        <div className="font-semibold">🍳 {recipe.title}</div>
-
-                        <div className="mt-1 text-sm text-slate-500">
-                          {recipe.category || "Рецепт"}
-                          {recipe.cookingTime ? ` · ${recipe.cookingTime}` : ""}
-                          {typeof recipe.score === "number"
-                            ? ` · ${recipe.score}%`
-                            : ""}
-                        </div>
-
-                        <div className="mt-3 flex gap-2">
-                          <button
-                            onClick={() => finishCooking(recipe)}
-                            className="flex-1 rounded-xl bg-green-500 px-3 py-2 text-sm font-medium text-white"
-                          >
-                            ✅ Приготовили
-                          </button>
-
-                          <button
-                            onClick={() => removeCooking(recipe)}
-                            className="flex-1 rounded-xl bg-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
-                          >
-                            Убрать
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </ToggleBlock>
-
               <ToggleBlock
                 title="🥘 Можно приготовить"
                 count={suggestedResults.length}
@@ -763,11 +1181,11 @@ export default function AiCookPage() {
                   <p className="text-sm text-slate-500">Подбираю рецепты...</p>
                 ) : suggestedResults.length === 0 ? (
                   <p className="text-sm text-slate-500">
-                    Пока нет подходящих рецептов.
+                    Пока нет подходящих блюд из продуктов дома.
                   </p>
                 ) : (
                   <div className="space-y-3">
-                    {suggestedResults.slice(0, 40).map((result) => (
+                    {suggestedResults.map((result) => (
                       <RecipeCard key={result.recipe.id} result={result} />
                     ))}
                   </div>
@@ -775,7 +1193,7 @@ export default function AiCookPage() {
               </ToggleBlock>
 
               <ToggleBlock
-                title="⭐ Избранные"
+                title="⭐ Избранные рецепты"
                 count={favoriteResults.length}
                 open={showFavorites}
                 onToggle={() => setShowFavorites((prev) => !prev)}
@@ -809,7 +1227,7 @@ export default function AiCookPage() {
                   </p>
                 ) : (
                   <div className="flex flex-wrap gap-2">
-                    {fridgeIngredientIds.map((id) => (
+                    {fridgeIngredientIds.slice(0, 80).map((id) => (
                       <span
                         key={id}
                         className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-700"
@@ -824,161 +1242,160 @@ export default function AiCookPage() {
           )}
         </section>
 
-        {selectedRecipe && (
-          <div className="fixed inset-0 z-50 bg-black/40 px-4 py-6">
-            <div className="mx-auto flex max-h-full max-w-md flex-col rounded-3xl bg-white">
-              <div className="border-b border-slate-100 p-5">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h2 className="text-2xl font-bold">
-                      {selectedRecipe.recipe.title}
-                    </h2>
+        <AnimatePresence>
+          {selectedRecipe && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-50 bg-black/40 px-4 py-6"
+            >
+              <motion.div
+                initial={{ opacity: 0, y: 24, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 24, scale: 0.96 }}
+                transition={{ duration: 0.22 }}
+                className="mx-auto flex max-h-full max-w-md flex-col rounded-3xl bg-white"
+              >
+                <div className="border-b border-slate-100 p-5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h2 className="text-2xl font-bold">
+                        {selectedRecipe.recipe.title}
+                      </h2>
 
-                    <p className="mt-1 text-sm text-slate-500">
-                      {selectedRecipe.recipe.category || "Рецепт"}
-                      {getRecipeTime(selectedRecipe.recipe)
-                        ? ` · ${getRecipeTime(selectedRecipe.recipe)}`
-                        : ""}
-                    </p>
+                      <p className="mt-1 text-sm text-slate-500">
+                        {selectedRecipe.recipe.category || "Рецепт"}
+                        {getRecipeTime(selectedRecipe.recipe)
+                          ? ` · ${getRecipeTime(selectedRecipe.recipe)}`
+                          : ""}
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setSelectedRecipe(null)}
+                      className="rounded-full bg-slate-100 px-3 py-2 text-sm"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+
+                <div className="overflow-y-auto p-5">
+                  <div className="mb-5 rounded-3xl bg-slate-50 p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-sm text-slate-500">Готовность</div>
+                        <div className="text-2xl font-bold">
+                          {selectedRecipe.score}%
+                        </div>
+                      </div>
+
+                      <div className="text-sm text-slate-500">
+                        Есть {selectedRecipe.haveIds.length} из{" "}
+                        {selectedRecipe.total}
+                      </div>
+                    </div>
+
+                    <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200">
+                      <div
+                        className="h-full rounded-full bg-green-500"
+                        style={{ width: `${selectedRecipe.score}%` }}
+                      />
+                    </div>
                   </div>
 
                   <button
-                    onClick={() => setSelectedRecipe(null)}
-                    className="rounded-full bg-slate-100 px-3 py-2 text-sm"
+                    type="button"
+                    onClick={() => startCooking(selectedRecipe)}
+                    className="mb-4 w-full rounded-2xl bg-blue-500 px-4 py-3 font-medium text-white"
                   >
-                    ✕
+                    👨‍🍳 Будем готовить
                   </button>
-                </div>
-              </div>
 
-              <div className="overflow-y-auto p-5">
-                <AnimatePresence>
-                  {addedAnimation && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 18, scale: 0.98 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                      className="mb-4 rounded-2xl bg-green-100 p-3 text-center text-sm font-medium text-green-700"
-                    >
-                      ✅ Добавлено в покупки и в “Будем готовить”
-                    </motion.div>
-                  )}
-
-                  {cookingAnimation && (
-                    <motion.div
-                      initial={{ opacity: 0, y: 18, scale: 0.98 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                      className="mb-4 rounded-2xl bg-blue-100 p-3 text-center text-sm font-medium text-blue-700"
-                    >
-                      👨‍🍳 Блюдо отмечено как “Будем готовить”
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                <div className="mb-5 rounded-3xl bg-slate-50 p-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-sm text-slate-500">Готовность</div>
-                      <div className="text-2xl font-bold">
-                        {selectedRecipe.score}%
-                      </div>
-                    </div>
-
-                    <div className="text-sm text-slate-500">
-                      Есть {selectedRecipe.haveIds.length} из{" "}
-                      {selectedRecipe.total}
-                    </div>
-                  </div>
-
-                  <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200">
-                    <div
-                      className="h-full rounded-full bg-green-500"
-                      style={{ width: `${selectedRecipe.score}%` }}
-                    />
-                  </div>
-                </div>
-
-                <button
-                  onClick={() => startCooking(selectedRecipe)}
-                  className="mb-4 w-full rounded-2xl bg-blue-500 px-4 py-3 font-medium text-white"
-                >
-                  👨‍🍳 Будем готовить
-                </button>
-
-                {selectedRecipe.recipe.description && (
-                  <p className="mb-5 text-sm leading-6 text-slate-700">
-                    {selectedRecipe.recipe.description}
-                  </p>
-                )}
-
-                <h3 className="mb-2 font-semibold">Есть дома</h3>
-
-                <div className="mb-5 space-y-2">
-                  {selectedRecipe.haveIds.length === 0 ? (
-                    <p className="text-sm text-slate-500">
-                      Из нужных ингредиентов дома ничего нет.
+                  {selectedRecipe.recipe.description && (
+                    <p className="mb-5 text-sm leading-6 text-slate-700">
+                      {selectedRecipe.recipe.description}
                     </p>
-                  ) : (
-                    selectedRecipe.haveIds.map((id) => (
-                      <div
-                        key={id}
-                        className="rounded-2xl bg-green-50 px-4 py-2 text-sm text-green-700"
-                      >
-                        ✓ {getProductLabel(id)}
+                  )}
+
+                  <h3 className="mb-2 font-semibold">Есть дома</h3>
+
+                  <div className="mb-5 space-y-2">
+                    {selectedRecipe.haveIds.length === 0 ? (
+                      <p className="text-sm text-slate-500">
+                        Из нужных ингредиентов дома ничего нет.
+                      </p>
+                    ) : (
+                      selectedRecipe.haveIds.map((id) => (
+                        <motion.div
+                          key={id}
+                          initial={{ opacity: 0, x: -10 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          className="rounded-2xl bg-green-50 px-4 py-2 text-sm text-green-700"
+                        >
+                          ✓ {getProductLabel(id)}
+                        </motion.div>
+                      ))
+                    )}
+                  </div>
+
+                  {selectedRecipe.missingIds.length > 0 && (
+                    <>
+                      <h3 className="mb-2 font-semibold">Не хватает</h3>
+
+                      <div className="mb-5 space-y-2">
+                        {selectedRecipe.missingIds.map((id) => (
+                          <motion.div
+                            key={id}
+                            initial={{ opacity: 0, x: -10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            className="rounded-2xl bg-orange-50 px-4 py-2 text-sm text-orange-700"
+                          >
+                            + {getProductLabel(id)}
+                          </motion.div>
+                        ))}
                       </div>
-                    ))
+
+                      <motion.button
+                        whileTap={{ scale: 0.96 }}
+                        type="button"
+                        onClick={() => addMissingToShopping(selectedRecipe)}
+                        className="mb-5 w-full rounded-2xl bg-green-500 px-4 py-3 font-medium text-white"
+                      >
+                        🛒 Добавить недостающее в покупки
+                      </motion.button>
+                    </>
+                  )}
+
+                  <h3 className="mb-2 font-semibold">Приготовление</h3>
+
+                  <div className="space-y-3">
+                    {(selectedRecipe.recipe.steps || []).map((step, index) => (
+                      <motion.div
+                        key={`${step}-${index}`}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: index * 0.03 }}
+                        className="rounded-2xl bg-slate-50 p-4 text-sm leading-6 text-slate-700"
+                      >
+                        <b>Шаг {index + 1}.</b> {step}
+                      </motion.div>
+                    ))}
+                  </div>
+
+                  {(!selectedRecipe.recipe.steps ||
+                    selectedRecipe.recipe.steps.length === 0) && (
+                    <p className="text-sm text-slate-500">
+                      Шаги приготовления не указаны.
+                    </p>
                   )}
                 </div>
-
-                {selectedRecipe.missingIds.length > 0 && (
-                  <>
-                    <h3 className="mb-2 font-semibold">Не хватает</h3>
-
-                    <div className="mb-5 space-y-2">
-                      {selectedRecipe.missingIds.map((id) => (
-                        <div
-                          key={id}
-                          className="rounded-2xl bg-orange-50 px-4 py-2 text-sm text-orange-700"
-                        >
-                          + {getProductLabel(id)}
-                        </div>
-                      ))}
-                    </div>
-
-                    <motion.button
-                      whileTap={{ scale: 0.96 }}
-                      onClick={() => addMissingToShopping(selectedRecipe)}
-                      className="mb-5 w-full rounded-2xl bg-green-500 px-4 py-3 font-medium text-white"
-                    >
-                      🛒 Добавить недостающее в покупки
-                    </motion.button>
-                  </>
-                )}
-
-                <h3 className="mb-2 font-semibold">Приготовление</h3>
-
-                <div className="space-y-3">
-                  {(selectedRecipe.recipe.steps || []).map((step, index) => (
-                    <div
-                      key={`${step}-${index}`}
-                      className="rounded-2xl bg-slate-50 p-4 text-sm leading-6 text-slate-700"
-                    >
-                      <b>Шаг {index + 1}.</b> {step}
-                    </div>
-                  ))}
-                </div>
-
-                {(!selectedRecipe.recipe.steps ||
-                  selectedRecipe.recipe.steps.length === 0) && (
-                  <p className="text-sm text-slate-500">
-                    Шаги приготовления не указаны.
-                  </p>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <BottomNav current="ai" />
       </div>

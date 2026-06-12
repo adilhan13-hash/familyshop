@@ -56,6 +56,8 @@ export default function ShoppingPage() {
   const [frequentProducts, setFrequentProducts] = useState<Product[]>([]);
   const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState("");
+  const [showFrequent, setShowFrequent] = useState(false);
+  const [frequentVisibleCount, setFrequentVisibleCount] = useState(12);
 
   const [loadingShopping, setLoadingShopping] = useState(true);
   const [loadingFavorites, setLoadingFavorites] = useState(true);
@@ -68,7 +70,8 @@ export default function ShoppingPage() {
       .toLowerCase()
       .replace(/ё/g, "е")
       .replace(/[^\p{L}\p{N}\s]/gu, " ")
-      .replace(/\s+/g, " ");
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
   function cleanProductName(value: string) {
@@ -101,6 +104,45 @@ export default function ShoppingPage() {
     };
   }
 
+  function findCatalogProduct(product: Product | ShoppingItem) {
+    const productId = "productId" in product ? product.productId : product.id;
+    const ingredientId = product.ingredientId;
+    const cleanName =
+      "productName" in product && product.productName
+        ? cleanProductName(product.productName)
+        : cleanProductName(product.name || "");
+
+    return allProducts.find((catalogProduct) => {
+      if (productId && catalogProduct.id === productId) return true;
+      if (ingredientId && catalogProduct.ingredientId === ingredientId) {
+        return true;
+      }
+      if (ingredientId && catalogProduct.id === ingredientId) return true;
+
+      return normalizeName(catalogProduct.name) === normalizeName(cleanName);
+    });
+  }
+
+  function getResolvedProduct(product: Product): Product {
+    const catalogProduct = findCatalogProduct(product);
+
+    if (!catalogProduct) return product;
+
+    return {
+      ...product,
+      icon:
+        !product.icon || product.icon === "🛒"
+          ? catalogProduct.icon
+          : product.icon,
+      name: cleanProductName(product.name || catalogProduct.name),
+      category: product.category || catalogProduct.category,
+      ingredientId:
+        product.ingredientId ||
+        catalogProduct.ingredientId ||
+        catalogProduct.id,
+    };
+  }
+
   useEffect(() => {
     if (!familyId) return;
 
@@ -127,7 +169,7 @@ export default function ShoppingPage() {
 
         setShoppingList(items);
         setLoadingShopping(false);
-      }
+      },
     );
 
     return () => unsubscribe();
@@ -155,7 +197,7 @@ export default function ShoppingPage() {
         });
 
         setFridgeList(items);
-      }
+      },
     );
 
     return () => unsubscribe();
@@ -178,7 +220,7 @@ export default function ShoppingPage() {
 
         setFavoriteProducts(items);
         setLoadingFavorites(false);
-      }
+      },
     );
 
     return () => unsubscribe();
@@ -190,7 +232,7 @@ export default function ShoppingPage() {
     const frequentQuery = query(
       collection(db, "families", familyId, "frequentProducts"),
       orderBy("purchaseCount", "desc"),
-      limit(24)
+      limit(24),
     );
 
     const unsubscribe = onSnapshot(frequentQuery, (snapshot) => {
@@ -212,7 +254,7 @@ export default function ShoppingPage() {
     const productsQuery = query(
       collection(db, "products"),
       orderBy("name"),
-      limit(3000)
+      limit(3000),
     );
 
     const unsubscribe = onSnapshot(productsQuery, (snapshot) => {
@@ -235,21 +277,31 @@ export default function ShoppingPage() {
 
     if (text.length < 2) return [];
 
-    return allProducts
-      .filter((product) => {
-        const name = normalizeName(product.name);
-        const category = normalizeName(product.category || "");
-        const searchText = (product.search || [])
-          .map((item) => normalizeName(item))
-          .join(" ");
+    const filtered = allProducts.filter((product) => {
+      const name = normalizeName(product.name);
+      const category = normalizeName(product.category || "");
+      const searchText = (product.search || [])
+        .map((item) => normalizeName(item))
+        .join(" ");
 
-        return (
-          name.includes(text) ||
-          category.includes(text) ||
-          searchText.includes(text)
-        );
-      })
-      .slice(0, 24);
+      return (
+        name.includes(text) ||
+        category.includes(text) ||
+        searchText.includes(text)
+      );
+    });
+
+    const uniqueProducts = new Map<string, Product>();
+
+    filtered.forEach((product) => {
+      const key = normalizeName(product.name);
+
+      if (!uniqueProducts.has(key)) {
+        uniqueProducts.set(key, product);
+      }
+    });
+
+    return Array.from(uniqueProducts.values()).slice(0, 24);
   }, [allProducts, search]);
 
   function isFavorite(product: Product) {
@@ -259,7 +311,7 @@ export default function ShoppingPage() {
   function isProductInFridge(
     productId?: string,
     name?: string,
-    ingredientId?: string
+    ingredientId?: string,
   ) {
     return fridgeList.some((fridgeItem) => {
       if (ingredientId && fridgeItem.ingredientId) {
@@ -281,54 +333,60 @@ export default function ShoppingPage() {
   async function toggleFavorite(product: Product) {
     if (!familyId) return;
 
-    const exists = isFavorite(product);
-    const cleanName = cleanProductName(product.name);
-    const ingredientId = product.ingredientId || product.id;
+    const resolvedProduct = getResolvedProduct(product);
+    const exists = isFavorite(resolvedProduct);
+    const cleanName = cleanProductName(resolvedProduct.name);
+    const ingredientId = resolvedProduct.ingredientId || resolvedProduct.id;
 
     if (exists) {
       await deleteDoc(
-        doc(db, "families", familyId, "favoriteProducts", product.id)
+        doc(db, "families", familyId, "favoriteProducts", resolvedProduct.id),
       );
 
       return;
     }
 
     await setDoc(
-      doc(db, "families", familyId, "favoriteProducts", product.id),
+      doc(db, "families", familyId, "favoriteProducts", resolvedProduct.id),
       {
         name: cleanName,
-        icon: product.icon || "🛒",
-        category: product.category || "Другое",
-        productId: product.id,
+        icon: resolvedProduct.icon || "🛒",
+        category: resolvedProduct.category || "Другое",
+        productId: resolvedProduct.id,
         ingredientId,
-        search: product.search || [],
+        search: resolvedProduct.search || [],
         createdAt: serverTimestamp(),
       },
-      { merge: true }
+      { merge: true },
     );
   }
 
   async function addProduct(product: Product) {
     if (!familyId) return;
 
-    const cleanName = cleanProductName(product.name);
-    const fullName = `${product.icon} ${cleanName}`;
-    const ingredientId = product.ingredientId || product.id;
+    const resolvedProduct = getResolvedProduct(product);
+    const cleanName = cleanProductName(resolvedProduct.name);
+    const fullName = `${resolvedProduct.icon} ${cleanName}`;
+    const ingredientId = resolvedProduct.ingredientId || resolvedProduct.id;
 
     const alreadyExists = shoppingList.some((item) => {
       if (item.ingredientId && item.ingredientId === ingredientId) return true;
-      if (item.productId && item.productId === product.id) return true;
+      if (item.productId && item.productId === resolvedProduct.id) return true;
 
       return normalizeName(item.name) === normalizeName(fullName);
     });
 
     if (alreadyExists) return;
 
-    const existsInFridge = isProductInFridge(product.id, fullName, ingredientId);
+    const existsInFridge = isProductInFridge(
+      resolvedProduct.id,
+      fullName,
+      ingredientId,
+    );
 
     if (existsInFridge) {
       const confirmed = window.confirm(
-        `⚠️ ${fullName} уже есть в холодильнике.\n\nДобавить в список покупок всё равно?`
+        `⚠️ ${fullName} уже есть в холодильнике.\n\nДобавить в список покупок всё равно?`,
       );
 
       if (!confirmed) return;
@@ -337,10 +395,10 @@ export default function ShoppingPage() {
     await addDoc(collection(db, "families", familyId, "shopping"), {
       name: fullName,
       productName: cleanName,
-      icon: product.icon,
-      productId: product.id,
+      icon: resolvedProduct.icon,
+      productId: resolvedProduct.id,
       ingredientId,
-      category: product.category,
+      category: resolvedProduct.category,
       createdAt: serverTimestamp(),
     });
 
@@ -351,7 +409,7 @@ export default function ShoppingPage() {
       type: "shopping_add",
       title: "Добавил в покупки",
       message: fullName,
-      emoji: product.icon || "🛒",
+      emoji: resolvedProduct.icon || "🛒",
       itemName: fullName,
     });
 
@@ -361,24 +419,40 @@ export default function ShoppingPage() {
   async function saveFrequentProduct(item: ShoppingItem) {
     if (!familyId) return;
 
-    const productId = item.productId || makeSafeId(item.productName || item.name);
+    const catalogProduct = findCatalogProduct(item);
+
+    const productId =
+      item.productId ||
+      catalogProduct?.id ||
+      makeSafeId(item.productName || item.name);
 
     const cleanName = cleanProductName(
-      item.productName || item.name.replace(item.icon || "", "")
+      item.productName ||
+        catalogProduct?.name ||
+        item.name.replace(item.icon || "", ""),
     );
+
+    const icon =
+      item.icon && item.icon !== "🛒"
+        ? item.icon
+        : catalogProduct?.icon || "🛒";
 
     await setDoc(
       doc(db, "families", familyId, "frequentProducts", productId),
       {
         name: cleanName,
-        icon: item.icon || "🛒",
-        category: item.category || "Другое",
+        icon,
+        category: item.category || catalogProduct?.category || "Другое",
         productId,
-        ingredientId: item.ingredientId || productId,
+        ingredientId:
+          item.ingredientId ||
+          catalogProduct?.ingredientId ||
+          catalogProduct?.id ||
+          productId,
         purchaseCount: increment(1),
         updatedAt: serverTimestamp(),
       },
-      { merge: true }
+      { merge: true },
     );
   }
 
@@ -388,7 +462,11 @@ export default function ShoppingPage() {
     const productId = item.productId || undefined;
     const ingredientId = item.ingredientId || item.productId || undefined;
 
-    const alreadyInFridge = isProductInFridge(productId, item.name, ingredientId);
+    const alreadyInFridge = isProductInFridge(
+      productId,
+      item.name,
+      ingredientId,
+    );
 
     if (!alreadyInFridge) {
       await addDoc(collection(db, "families", familyId, "fridge"), {
@@ -454,7 +532,8 @@ export default function ShoppingPage() {
 
     return (
       <div className="grid grid-cols-4 gap-3">
-        {items.map((product) => {
+        {items.map((originalProduct) => {
+          const product = getResolvedProduct(originalProduct);
           const cleanName = cleanProductName(product.name);
           const fullName = `${product.icon} ${cleanName}`;
           const ingredientId = product.ingredientId || product.id;
@@ -474,7 +553,7 @@ export default function ShoppingPage() {
           const existsInFridge = isProductInFridge(
             product.id,
             fullName,
-            ingredientId
+            ingredientId,
           );
 
           const favorite = isFavorite(product);
@@ -485,16 +564,26 @@ export default function ShoppingPage() {
                 whileTap={{ scale: 0.92 }}
                 whileHover={{ scale: 1.04 }}
                 onClick={() => addProduct(product)}
-                className={`min-h-[96px] w-full rounded-2xl p-3 text-center text-sm transition ${
+                className={`min-h-[112px] w-full rounded-2xl p-3 text-center text-sm transition ${
                   isAdded
                     ? "bg-green-100 text-green-700"
                     : existsInFridge
-                    ? "bg-amber-100 text-amber-700"
-                    : "bg-slate-100 text-slate-900"
+                      ? "bg-amber-100 text-amber-700"
+                      : "bg-slate-100 text-slate-900"
                 }`}
               >
                 <div className="text-2xl">{product.icon}</div>
-                <div className="mt-1 line-clamp-2 text-xs">{cleanName}</div>
+                <div
+                  className="mt-1 text-xs leading-4"
+                  style={{
+                    display: "-webkit-box",
+                    WebkitLineClamp: 3,
+                    WebkitBoxOrient: "vertical",
+                    overflow: "hidden",
+                  }}
+                >
+                  {cleanName}
+                </div>
 
                 {product.purchaseCount ? (
                   <div className="mt-1 text-[10px] text-slate-400">
@@ -568,7 +657,7 @@ export default function ShoppingPage() {
                     const existsInFridge = isProductInFridge(
                       item.productId,
                       item.name,
-                      item.ingredientId
+                      item.ingredientId,
                     );
 
                     return (
@@ -698,7 +787,11 @@ export default function ShoppingPage() {
             transition={{ duration: 0.2 }}
             className="rounded-3xl bg-white p-5 shadow-sm"
           >
-            <div className="mb-4 flex items-center justify-between">
+            <button
+              type="button"
+              onClick={() => setShowFrequent((prev) => !prev)}
+              className="mb-1 flex w-full items-center justify-between text-left"
+            >
               <div>
                 <h2 className="text-lg font-semibold">🔁 Часто покупаемые</h2>
                 <p className="mt-1 text-sm text-slate-500">
@@ -706,16 +799,52 @@ export default function ShoppingPage() {
                 </p>
               </div>
 
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-500">
-                {frequentProducts.length}
-              </span>
-            </div>
+              <div className="flex items-center gap-2">
+                <span className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-500">
+                  {frequentProducts.length}
+                </span>
+                <span className="text-lg text-slate-400">
+                  {showFrequent ? "▲" : "▼"}
+                </span>
+              </div>
+            </button>
 
-            <ProductGrid
-              items={frequentProducts}
-              loading={loadingFrequent}
-              emptyText="Пока пусто. Купленные товары будут появляться здесь автоматически."
-            />
+            <AnimatePresence initial={false}>
+              {showFrequent && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="overflow-hidden pt-4"
+                >
+                  <ProductGrid
+                    items={frequentProducts.slice(0, frequentVisibleCount)}
+                    loading={loadingFrequent}
+                    emptyText="Пока пусто. Купленные товары будут появляться здесь автоматически."
+                  />
+
+                  {frequentProducts.length > frequentVisibleCount && (
+                    <motion.button
+                      whileTap={{ scale: 0.96 }}
+                      onClick={() => setFrequentVisibleCount((prev) => prev + 12)}
+                      className="mt-4 w-full rounded-2xl bg-slate-100 px-4 py-3 text-sm font-medium text-slate-700"
+                    >
+                      Показать ещё
+                    </motion.button>
+                  )}
+
+                  {frequentProducts.length > 12 && frequentVisibleCount > 12 && (
+                    <button
+                      onClick={() => setFrequentVisibleCount(12)}
+                      className="mt-3 w-full text-sm text-slate-500"
+                    >
+                      Свернуть до 12
+                    </button>
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </motion.div>
         </section>
 
