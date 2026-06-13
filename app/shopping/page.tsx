@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import BottomNav from "../../components/BottomNav";
 import { useFamilyAuth } from "../../components/AuthProvider";
@@ -70,6 +70,7 @@ export default function ShoppingPage() {
   const [showAllFrequent, setShowAllFrequent] = useState(false);
   const [message, setMessage] = useState("");
   const [creatingProduct, setCreatingProduct] = useState(false);
+  const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [loadingShopping, setLoadingShopping] = useState(true);
   const [loadingFavorites, setLoadingFavorites] = useState(true);
@@ -251,9 +252,14 @@ export default function ShoppingPage() {
   function showMessage(text: string) {
     setMessage(text);
 
-    window.setTimeout(() => {
+    if (messageTimerRef.current) {
+      clearTimeout(messageTimerRef.current);
+    }
+
+    messageTimerRef.current = setTimeout(() => {
       setMessage("");
-    }, 2500);
+      messageTimerRef.current = null;
+    }, 2200);
   }
 
   function productFromDoc(document: any): Product | null {
@@ -1049,20 +1055,21 @@ export default function ShoppingPage() {
           <h1 className="text-3xl font-bold">Покупки 🛒</h1>
         </motion.header>
 
-        <section className="space-y-5 px-5">
-          <AnimatePresence>
-            {message && (
-              <motion.div
-                initial={{ opacity: 0, y: -10, scale: 0.98 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -10, scale: 0.98 }}
-                className="rounded-2xl bg-blue-50 px-4 py-3 text-sm font-medium text-blue-700 shadow-sm"
-              >
-                {message}
-              </motion.div>
-            )}
-          </AnimatePresence>
+        <AnimatePresence>
+          {message && (
+            <motion.div
+              initial={{ opacity: 0, y: -18, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -18, scale: 0.98 }}
+              transition={{ duration: 0.2 }}
+              className="fixed left-1/2 top-5 z-[9999] w-[calc(100%-40px)] max-w-md -translate-x-1/2 rounded-2xl bg-blue-500 px-4 py-3 text-center text-sm font-medium text-white shadow-xl"
+            >
+              {message}
+            </motion.div>
+          )}
+        </AnimatePresence>
 
+        <section className="space-y-5 px-5">
           <motion.div
             initial={{ opacity: 0, y: 14 }}
             animate={{ opacity: 1, y: 0 }}

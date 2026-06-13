@@ -390,6 +390,13 @@ export default function AiPage() {
   const [addedAnimation, setAddedAnimation] = useState(false);
   const [cookingAnimation, setCookingAnimation] = useState(false);
 
+  useEffect(() => {
+    if (!message) return;
+
+    const timer = setTimeout(() => setMessage(""), 2500);
+    return () => clearTimeout(timer);
+  }, [message]);
+
   const productsMap = useMemo(() => {
     const map: Record<string, Product> = {};
 
@@ -1575,6 +1582,20 @@ export default function AiPage() {
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
       <div className="mx-auto min-h-screen max-w-md bg-slate-50 pb-24">
+        <AnimatePresence>
+          {message && (
+            <motion.div
+              key="ai-message-toast"
+              initial={{ opacity: 0, y: -14, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -14, scale: 0.98 }}
+              transition={{ duration: 0.18 }}
+              className="fixed left-1/2 top-20 z-[9999] w-[88%] max-w-md -translate-x-1/2 rounded-2xl bg-blue-500 px-4 py-2.5 text-center text-sm font-semibold leading-snug text-white shadow-xl"
+            >
+              {message}
+            </motion.div>
+          )}
+        </AnimatePresence>
         <motion.header
           initial={{ opacity: 0, y: -12 }}
           animate={{ opacity: 1, y: 0 }}
@@ -1598,43 +1619,6 @@ export default function AiPage() {
             placeholder="🔍 Найти рецепт от 2 букв"
             className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base outline-none focus:border-blue-400"
           />
-
-          <AnimatePresence>
-            {message && (
-              <motion.div
-                initial={{ opacity: 0, y: 12, scale: 0.98 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                className="rounded-2xl bg-blue-50 p-3 text-sm font-medium text-blue-700"
-              >
-                {message}
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          <AnimatePresence>
-            {addedAnimation && (
-              <motion.div
-                initial={{ opacity: 0, y: 18, scale: 0.98 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                className="rounded-2xl bg-green-100 p-3 text-center text-sm font-medium text-green-700"
-              >
-                ✅ Добавлено в покупки и в “Будем готовить”
-              </motion.div>
-            )}
-
-            {cookingAnimation && (
-              <motion.div
-                initial={{ opacity: 0, y: 18, scale: 0.98 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                className="rounded-2xl bg-blue-100 p-3 text-center text-sm font-medium text-blue-700"
-              >
-                👨‍🍳 Блюдо отмечено как “Будем готовить”
-              </motion.div>
-            )}
-          </AnimatePresence>
 
           {isSearching && (
             <ToggleBlock
