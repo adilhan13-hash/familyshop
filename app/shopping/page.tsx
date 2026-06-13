@@ -11,7 +11,6 @@ import {
   deleteDoc,
   doc,
   increment,
-  limit,
   onSnapshot,
   orderBy,
   query,
@@ -43,8 +42,13 @@ type Product = {
   name: string;
   category: string;
   ingredientId?: string;
+  aliases?: string[];
   search?: string[];
   purchaseCount?: number;
+  popular?: boolean;
+  recipeIngredient?: boolean;
+  fridgeAllowed?: boolean;
+  shoppingAllowed?: boolean;
 };
 
 export default function ShoppingPage() {
@@ -57,7 +61,10 @@ export default function ShoppingPage() {
   const [allProducts, setAllProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState("");
   const [showFrequent, setShowFrequent] = useState(false);
-  const [frequentVisibleCount, setFrequentVisibleCount] = useState(12);
+  const [frequentVisibleCount] = useState(12);
+  const [showAllFrequent, setShowAllFrequent] = useState(false);
+  const [message, setMessage] = useState("");
+  const [creatingProduct, setCreatingProduct] = useState(false);
 
   const [loadingShopping, setLoadingShopping] = useState(true);
   const [loadingFavorites, setLoadingFavorites] = useState(true);
@@ -81,11 +88,156 @@ export default function ShoppingPage() {
       .trim();
   }
 
+  function transliterate(value: string) {
+    const map: Record<string, string> = {
+      а: "a",
+      б: "b",
+      в: "v",
+      г: "g",
+      д: "d",
+      е: "e",
+      ё: "e",
+      ж: "zh",
+      з: "z",
+      и: "i",
+      й: "y",
+      к: "k",
+      л: "l",
+      м: "m",
+      н: "n",
+      о: "o",
+      п: "p",
+      р: "r",
+      с: "s",
+      т: "t",
+      у: "u",
+      ф: "f",
+      х: "h",
+      ц: "c",
+      ч: "ch",
+      ш: "sh",
+      щ: "sch",
+      ъ: "",
+      ы: "y",
+      ь: "",
+      э: "e",
+      ю: "yu",
+      я: "ya",
+    };
+
+    return value
+      .toLowerCase()
+      .split("")
+      .map((letter) => map[letter] ?? letter)
+      .join("");
+  }
+
   function makeSafeId(value: string) {
-    return normalizeName(value)
-      .replace(/[^\p{L}\p{N}]+/gu, "-")
+    return transliterate(normalizeName(value))
+      .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "")
       .slice(0, 80);
+  }
+
+  function uniqueStrings(values: string[]) {
+    return Array.from(
+      new Set(values.map((item) => item.trim()).filter(Boolean)),
+    );
+  }
+
+  function buildSearchTerms(name: string, id: string) {
+    const cleanName = cleanProductName(name);
+    const normalized = normalizeName(cleanName);
+    const safeId = makeSafeId(cleanName);
+
+    return uniqueStrings([
+      id,
+      safeId,
+      cleanName,
+      cleanName.toLowerCase(),
+      normalized,
+    ]);
+  }
+
+  function guessIcon(name: string) {
+    const text = normalizeName(name);
+
+    if (/хлеб|батон|багет|булоч|лаваш|лепеш/.test(text)) return "🍞";
+    if (/макарон|спагетти|лапша|вермишель|паста/.test(text)) return "🍝";
+    if (/молок|кефир|йогурт|сметан|сливк|творог/.test(text)) return "🥛";
+    if (/сыр/.test(text)) return "🧀";
+    if (/яйц/.test(text)) return "🥚";
+    if (/куриц|курин|бедро|крыл|грудк|филе/.test(text)) return "🍗";
+    if (/говяд|свин|фарш|мяс|колбас|сосиск|ветчин/.test(text)) return "🥩";
+    if (/рыб|лосос|семг|форел|скумбр|сельд|тунец/.test(text)) return "🐟";
+    if (
+      /картоф|морков|лук|чеснок|огур|помид|капуст|перец|баклаж|кабач/.test(text)
+    )
+      return "🥬";
+    if (/яблок|банан|апельсин|лимон|виноград|груш|ягод|клубник/.test(text))
+      return "🍎";
+    if (/сок|вода|чай|кофе|напит/.test(text)) return "🥤";
+    if (/сахар|конфет|печен|шоколад|вафл|торт|мед/.test(text)) return "🍫";
+    if (/масло|соус|майонез|кетчуп|уксус|горчиц/.test(text)) return "🧴";
+    if (/соль|перец|спец|паприк|зира|куркум|кориандр/.test(text)) return "🧂";
+    if (/бумага|салфет|пакет|губк|порошок|гель|мыло|шампун/.test(text))
+      return "🧻";
+    if (/подгуз|детск|соска|пюре|игруш/.test(text)) return "👶";
+
+    return "🛒";
+  }
+
+  function guessCategory(name: string) {
+    const text = normalizeName(name);
+
+    if (/хлеб|батон|багет|булоч|лаваш|лепеш/.test(text)) {
+      return "Хлеб и выпечка";
+    }
+    if (
+      /макарон|спагетти|лапша|вермишель|рис|греч|круп|мука|паста/.test(text)
+    ) {
+      return "Крупы и макароны";
+    }
+    if (/молок|кефир|йогурт|сметан|сливк|творог|сыр|масло сливоч/.test(text)) {
+      return "Молочные продукты";
+    }
+    if (/куриц|курин|говяд|свин|фарш|мяс|колбас|сосиск|ветчин/.test(text)) {
+      return "Мясо и птица";
+    }
+    if (/рыб|лосос|семг|форел|скумбр|сельд|тунец|кревет/.test(text)) {
+      return "Рыба и морепродукты";
+    }
+    if (
+      /картоф|морков|лук|чеснок|огур|помид|капуст|перец|баклаж|кабач|зелень/.test(
+        text,
+      )
+    ) {
+      return "Овощи и зелень";
+    }
+    if (/яблок|банан|апельсин|лимон|виноград|груш|ягод|клубник/.test(text)) {
+      return "Фрукты и ягоды";
+    }
+    if (/сок|вода|чай|кофе|напит|лимонад/.test(text)) return "Напитки";
+    if (/сахар|конфет|печен|шоколад|вафл|торт|мед/.test(text)) {
+      return "Сладости";
+    }
+    if (/соль|перец|спец|паприк|зира|куркум|кориандр/.test(text)) {
+      return "Специи";
+    }
+    if (/бумага|салфет|пакет|губк|порошок|гель|мыло|шампун/.test(text)) {
+      return "Бытовая химия";
+    }
+    if (/подгуз|детск|соска|пюре|игруш/.test(text)) return "Детское";
+
+    return "Добавлено вручную";
+  }
+
+  function showMessage(text: string) {
+    setMessage(text);
+
+    window.setTimeout(() => {
+      setMessage("");
+    }, 2500);
   }
 
   function productFromDoc(document: any): Product | null {
@@ -99,8 +251,13 @@ export default function ShoppingPage() {
       name: cleanProductName(data.name),
       category: data.category || "Другое",
       ingredientId: data.ingredientId || document.id,
+      aliases: Array.isArray(data.aliases) ? data.aliases : [],
       search: Array.isArray(data.search) ? data.search : [],
       purchaseCount: data.purchaseCount || 0,
+      popular: Boolean(data.popular),
+      recipeIngredient: Boolean(data.recipeIngredient),
+      fridgeAllowed: data.fridgeAllowed !== false,
+      shoppingAllowed: data.shoppingAllowed !== false,
     };
   }
 
@@ -232,7 +389,6 @@ export default function ShoppingPage() {
     const frequentQuery = query(
       collection(db, "families", familyId, "frequentProducts"),
       orderBy("purchaseCount", "desc"),
-      limit(24),
     );
 
     const unsubscribe = onSnapshot(frequentQuery, (snapshot) => {
@@ -254,7 +410,6 @@ export default function ShoppingPage() {
     const productsQuery = query(
       collection(db, "products"),
       orderBy("name"),
-      limit(3000),
     );
 
     const unsubscribe = onSnapshot(productsQuery, (snapshot) => {
@@ -277,19 +432,36 @@ export default function ShoppingPage() {
 
     if (text.length < 2) return [];
 
-    const filtered = allProducts.filter((product) => {
+    function getSearchScore(product: Product) {
       const name = normalizeName(product.name);
       const category = normalizeName(product.category || "");
-      const searchText = (product.search || [])
-        .map((item) => normalizeName(item))
-        .join(" ");
+      const terms = (product.search || []).map((item) => normalizeName(item));
+      const allText = [name, category, ...terms].join(" ");
 
-      return (
-        name.includes(text) ||
-        category.includes(text) ||
-        searchText.includes(text)
-      );
-    });
+      if (name === text) return 0;
+      if (terms.some((term) => term === text)) return 1;
+      if (name.startsWith(text)) return 2;
+      if (terms.some((term) => term.startsWith(text))) return 3;
+      if (name.includes(text)) return 4;
+      if (allText.includes(text)) return 5;
+
+      return 99;
+    }
+
+    const filtered = allProducts
+      .map((product) => ({ product, score: getSearchScore(product) }))
+      .filter((item) => item.score < 99)
+      .sort((a, b) => {
+        if (a.score !== b.score) return a.score - b.score;
+
+        const aCreated = a.product.recipeIngredient === false ? 0 : 1;
+        const bCreated = b.product.recipeIngredient === false ? 0 : 1;
+
+        if (aCreated !== bCreated) return aCreated - bCreated;
+
+        return a.product.name.localeCompare(b.product.name, "ru");
+      })
+      .map((item) => item.product);
 
     const uniqueProducts = new Map<string, Product>();
 
@@ -343,22 +515,27 @@ export default function ShoppingPage() {
         doc(db, "families", familyId, "favoriteProducts", resolvedProduct.id),
       );
 
+      showMessage(`☆ Убрали из избранного: ${cleanName}`);
       return;
     }
 
     await setDoc(
       doc(db, "families", familyId, "favoriteProducts", resolvedProduct.id),
       {
+        id: resolvedProduct.id,
         name: cleanName,
         icon: resolvedProduct.icon || "🛒",
         category: resolvedProduct.category || "Другое",
         productId: resolvedProduct.id,
         ingredientId,
+        aliases: resolvedProduct.aliases || [],
         search: resolvedProduct.search || [],
         createdAt: serverTimestamp(),
       },
       { merge: true },
     );
+
+    showMessage(`⭐ Добавили в избранное: ${cleanName}`);
   }
 
   async function addProduct(product: Product) {
@@ -413,7 +590,160 @@ export default function ShoppingPage() {
       itemName: fullName,
     });
 
+    showMessage(`🛒 Добавлено в покупки: ${cleanName}`);
     setSearch("");
+  }
+
+  async function addCustomProduct(rawName: string, addToFavorites = false) {
+    if (!familyId || creatingProduct) return;
+
+    const cleanName = cleanProductName(rawName);
+    const normalized = normalizeName(cleanName);
+
+    if (normalized.length < 2) return;
+
+    const existingProduct = allProducts.find((product) => {
+      const productValues = [
+        product.name,
+        ...(product.aliases || []),
+        ...(product.search || []),
+      ];
+
+      return productValues.some((value) => normalizeName(value) === normalized);
+    });
+
+    if (existingProduct) {
+      await addProduct(existingProduct);
+
+      if (addToFavorites && !isFavorite(existingProduct)) {
+        await toggleFavorite(existingProduct);
+      }
+
+      showMessage(`✅ Такой товар уже есть в базе: ${existingProduct.name}`);
+      return;
+    }
+
+    const productId = makeSafeId(cleanName) || `product-${Date.now()}`;
+    const icon = guessIcon(cleanName);
+    const category = guessCategory(cleanName);
+    const searchTerms = buildSearchTerms(cleanName, productId);
+
+    const newProduct: Product = {
+      id: productId,
+      name: cleanName,
+      icon,
+      category,
+      ingredientId: productId,
+      aliases: [],
+      search: searchTerms,
+      popular: false,
+      recipeIngredient: false,
+      fridgeAllowed: true,
+      shoppingAllowed: true,
+    };
+
+    const alreadyExistsInShopping = shoppingList.some((item) => {
+      if (item.productId && item.productId === productId) return true;
+      if (item.ingredientId && item.ingredientId === productId) return true;
+
+      return (
+        normalizeName(item.productName || item.name) === normalized ||
+        normalizeName(item.name) === normalizeName(`${icon} ${cleanName}`)
+      );
+    });
+
+    const existsInFridge = isProductInFridge(
+      productId,
+      `${icon} ${cleanName}`,
+      productId,
+    );
+
+    if (existsInFridge) {
+      const confirmed = window.confirm(
+        `⚠️ ${icon} ${cleanName} уже есть в холодильнике.\n\nСоздать/добавить в список покупок всё равно?`,
+      );
+
+      if (!confirmed) return;
+    }
+
+    try {
+      setCreatingProduct(true);
+
+      await setDoc(
+        doc(db, "products", productId),
+        {
+          ...newProduct,
+          mergedIds: [productId],
+          source: "user_created",
+          createdBy: appUser?.uid || "unknown",
+          createdByName: appUser?.displayName || "Без имени",
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      setAllProducts((prev) => {
+        const withoutSame = prev.filter((item) => item.id !== productId);
+        return [...withoutSame, newProduct].sort((a, b) =>
+          a.name.localeCompare(b.name, "ru"),
+        );
+      });
+
+      if (!alreadyExistsInShopping) {
+        await addDoc(collection(db, "families", familyId, "shopping"), {
+          name: `${icon} ${cleanName}`,
+          productName: cleanName,
+          icon,
+          productId,
+          ingredientId: productId,
+          category,
+          custom: true,
+          createdAt: serverTimestamp(),
+        });
+      }
+
+      if (addToFavorites) {
+        await setDoc(
+          doc(db, "families", familyId, "favoriteProducts", productId),
+          {
+            id: productId,
+            name: cleanName,
+            icon,
+            category,
+            productId,
+            ingredientId: productId,
+            aliases: [],
+            search: searchTerms,
+            createdAt: serverTimestamp(),
+          },
+          { merge: true },
+        );
+      }
+
+      await addActivity({
+        familyId,
+        userId: appUser?.uid || "unknown",
+        userName: appUser?.displayName || "Без имени",
+        type: "product_create",
+        title: "Создал товар",
+        message: `${icon} ${cleanName}`,
+        emoji: icon,
+        itemName: `${icon} ${cleanName}`,
+      });
+
+      showMessage(
+        addToFavorites
+          ? `✅ Товар создан, добавлен в покупки и избранное: ${icon} ${cleanName}`
+          : `✅ Товар создан в базе и добавлен в покупки: ${icon} ${cleanName}`,
+      );
+      setSearch("");
+    } catch (error) {
+      console.error("CREATE PRODUCT ERROR", error);
+      showMessage("❌ Не получилось создать товар. Проверь лимиты Firebase.");
+    } finally {
+      setCreatingProduct(false);
+    }
   }
 
   async function saveFrequentProduct(item: ShoppingItem) {
@@ -494,6 +824,8 @@ export default function ShoppingPage() {
       emoji: "✅",
       itemName: item.name,
     });
+
+    showMessage(`✅ Куплено и перенесено в холодильник: ${item.name}`);
   }
 
   async function removeFromShopping(item: ShoppingItem) {
@@ -511,6 +843,8 @@ export default function ShoppingPage() {
       emoji: "🗑️",
       itemName: item.name,
     });
+
+    showMessage(`🗑️ Убрали из покупок: ${item.name}`);
   }
 
   function ProductGrid({
@@ -555,11 +889,26 @@ export default function ShoppingPage() {
             fullName,
             ingredientId,
           );
-
           const favorite = isFavorite(product);
 
           return (
             <div key={product.id} className="relative">
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggleFavorite(product);
+                }}
+                className={`absolute right-2 top-2 z-10 flex h-7 w-7 items-center justify-center rounded-full text-base shadow-sm transition ${
+                  favorite
+                    ? "bg-yellow-100 text-yellow-600"
+                    : "bg-white text-slate-500"
+                }`}
+                title={favorite ? "Убрать из избранного" : "Добавить в избранное"}
+              >
+                {favorite ? "★" : "☆"}
+              </button>
+
               <motion.button
                 whileTap={{ scale: 0.92 }}
                 whileHover={{ scale: 1.04 }}
@@ -574,12 +923,15 @@ export default function ShoppingPage() {
               >
                 <div className="text-2xl">{product.icon}</div>
                 <div
-                  className="mt-1 text-xs leading-4"
+                  title={cleanName}
+                  className="mt-1 text-[10px] leading-[12px]"
                   style={{
                     display: "-webkit-box",
                     WebkitLineClamp: 3,
                     WebkitBoxOrient: "vertical",
                     overflow: "hidden",
+                    overflowWrap: "anywhere",
+                    wordBreak: "break-word",
                   }}
                 >
                   {cleanName}
@@ -595,17 +947,6 @@ export default function ShoppingPage() {
                   <div className="mt-1 text-[10px] font-medium">Есть дома</div>
                 )}
               </motion.button>
-
-              <button
-                onClick={(event) => {
-                  event.stopPropagation();
-                  toggleFavorite(product);
-                }}
-                className="absolute right-1 top-1 rounded-full bg-white/90 px-1 text-lg shadow-sm"
-                aria-label="Добавить в избранное"
-              >
-                {favorite ? "⭐" : "☆"}
-              </button>
             </div>
           );
         })}
@@ -629,6 +970,19 @@ export default function ShoppingPage() {
         </motion.header>
 
         <section className="space-y-5 px-5">
+          <AnimatePresence>
+            {message && (
+              <motion.div
+                initial={{ opacity: 0, y: -10, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -10, scale: 0.98 }}
+                className="rounded-2xl bg-blue-50 px-4 py-3 text-sm font-medium text-blue-700 shadow-sm"
+              >
+                {message}
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           <motion.div
             initial={{ opacity: 0, y: 14 }}
             animate={{ opacity: 1, y: 0 }}
@@ -752,6 +1106,30 @@ export default function ShoppingPage() {
                 loading={loadingProducts}
                 emptyText="Ничего не найдено."
               />
+
+              {!loadingProducts && normalizeName(search).length >= 2 && (
+                <div className="mt-4 space-y-3">
+                  <motion.button
+                    whileTap={{ scale: 0.96 }}
+                    disabled={creatingProduct}
+                    onClick={() => addCustomProduct(search, false)}
+                    className="w-full rounded-2xl bg-green-500 px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
+                  >
+                    {creatingProduct
+                      ? "Создаю товар..."
+                      : `➕ Создать товар “${cleanProductName(search)}”`}
+                  </motion.button>
+
+                  <motion.button
+                    whileTap={{ scale: 0.96 }}
+                    disabled={creatingProduct}
+                    onClick={() => addCustomProduct(search, true)}
+                    className="w-full rounded-2xl bg-yellow-100 px-4 py-3 text-sm font-semibold text-yellow-700 disabled:opacity-60"
+                  >
+                    ⭐ Создать и добавить в избранное
+                  </motion.button>
+                </div>
+              )}
             </motion.div>
           )}
 
@@ -777,7 +1155,7 @@ export default function ShoppingPage() {
             <ProductGrid
               items={favoriteProducts}
               loading={loadingFavorites}
-              emptyText="Пока нет избранных. Нажми ☆ на товаре."
+              emptyText="Пока нет избранных. Нажми ☆ в правом верхнем углу карточки товара."
             />
           </motion.div>
 
@@ -819,28 +1197,25 @@ export default function ShoppingPage() {
                   className="overflow-hidden pt-4"
                 >
                   <ProductGrid
-                    items={frequentProducts.slice(0, frequentVisibleCount)}
+                    items={
+                      showAllFrequent
+                        ? frequentProducts
+                        : frequentProducts.slice(0, frequentVisibleCount)
+                    }
                     loading={loadingFrequent}
                     emptyText="Пока пусто. Купленные товары будут появляться здесь автоматически."
                   />
 
-                  {frequentProducts.length > frequentVisibleCount && (
+                  {frequentProducts.length > 12 && (
                     <motion.button
                       whileTap={{ scale: 0.96 }}
-                      onClick={() => setFrequentVisibleCount((prev) => prev + 12)}
+                      onClick={() => setShowAllFrequent((prev) => !prev)}
                       className="mt-4 w-full rounded-2xl bg-slate-100 px-4 py-3 text-sm font-medium text-slate-700"
                     >
-                      Показать ещё
+                      {showAllFrequent
+                        ? "Свернуть до 12"
+                        : `Показать все ${frequentProducts.length}`}
                     </motion.button>
-                  )}
-
-                  {frequentProducts.length > 12 && frequentVisibleCount > 12 && (
-                    <button
-                      onClick={() => setFrequentVisibleCount(12)}
-                      className="mt-3 w-full text-sm text-slate-500"
-                    >
-                      Свернуть до 12
-                    </button>
                   )}
                 </motion.div>
               )}

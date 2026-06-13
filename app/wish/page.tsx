@@ -138,6 +138,7 @@ export default function WishPage() {
   const [price, setPrice] = useState("");
   const [link, setLink] = useState("");
   const [imageBase64, setImageBase64] = useState("");
+  const [openedImage, setOpenedImage] = useState<string | null>(null);
   const [section, setSection] = useState("👨 Он");
   const [priority, setPriority] = useState("normal");
   const [saving, setSaving] = useState(false);
@@ -692,13 +693,17 @@ export default function WishPage() {
                       className={`overflow-hidden rounded-3xl border bg-gradient-to-br shadow-sm ${itemPriority.cardClass}`}
                     >
                       {item.imageBase64 ? (
-                        <div className="h-52 overflow-hidden bg-slate-100">
+                        <button
+                          type="button"
+                          onClick={() => setOpenedImage(item.imageBase64)}
+                          className="block h-52 w-full overflow-hidden bg-slate-100"
+                        >
                           <img
                             src={item.imageBase64}
                             alt={item.title}
                             className="h-full w-full object-cover"
                           />
-                        </div>
+                        </button>
                       ) : (
                         <div className="flex h-32 items-center justify-center bg-white/60 text-5xl">
                           {itemSection?.emoji || "⭐"}
@@ -782,6 +787,40 @@ export default function WishPage() {
             )}
           </div>
         </section>
+
+        <AnimatePresence>
+          {openedImage ? (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setOpenedImage(null)}
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
+            >
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setOpenedImage(null);
+                }}
+                className="absolute right-4 top-4 flex h-12 w-12 items-center justify-center rounded-full bg-white text-xl font-bold text-slate-900 shadow-lg"
+              >
+                ✕
+              </button>
+
+              <motion.img
+                initial={{ opacity: 0, y: 16, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 16, scale: 0.96 }}
+                transition={{ duration: 0.2 }}
+                src={openedImage}
+                alt="Фото желания"
+                onClick={(event) => event.stopPropagation()}
+                className="max-h-[88vh] max-w-full rounded-3xl object-contain shadow-2xl"
+              />
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
 
         <BottomNav current="wish" />
       </div>

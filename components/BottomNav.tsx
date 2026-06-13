@@ -17,10 +17,10 @@ type BottomNavProps = {
 export default function BottomNav({ current }: BottomNavProps) {
   const items = [
     { key: "shopping", href: "/shopping", icon: "🛒", label: "Покупки" },
-    { key: "fridge", href: "/fridge", icon: "🥛", label: "Холодильник" },
+    { key: "fridge", href: "/fridge", icon: "📦", label: "Есть дома" },
     { key: "wish", href: "/wish", icon: "⭐", label: "Wish" },
     { key: "ai", href: "/ai", icon: "🤖", label: "AI" },
-    { key: "home", href: "/home", icon: "🏡", label: "Дом" },
+    { key: "home", href: "/home", icon: "👨‍👩‍👧", label: "Семья" },
   ] as const;
 
   return (
@@ -33,7 +33,7 @@ export default function BottomNav({ current }: BottomNavProps) {
             <Link key={item.key} href={item.href} className="flex-1">
               <motion.div
                 whileTap={{ scale: 0.9 }}
-                className={`relative mx-1 flex flex-col items-center justify-center rounded-2xl px-2 py-2 transition ${
+                className={`relative mx-1 flex flex-col items-center justify-center rounded-2xl px-1 py-2 transition ${
                   isActive ? "text-green-600" : "text-slate-500"
                 }`}
               >
@@ -49,10 +49,12 @@ export default function BottomNav({ current }: BottomNavProps) {
                   />
                 )}
 
-                <span className="relative z-10 text-xl">{item.icon}</span>
+                <span className="relative z-10 text-xl leading-none">
+                  {item.icon}
+                </span>
 
                 <span
-                  className={`relative z-10 mt-1 text-[11px] ${
+                  className={`relative z-10 mt-1 text-center text-[10px] leading-tight ${
                     isActive ? "font-semibold" : "font-medium"
                   }`}
                 >
