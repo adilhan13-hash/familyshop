@@ -11,17 +11,12 @@ import {
   collection,
   deleteDoc,
   doc,
-  endAt,
-  getDoc,
-  getDocs,
   limit,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
   setDoc,
-  startAt,
-  where,
 } from "firebase/firestore";
 import { addActivity } from "../../lib/activity";
 
@@ -492,30 +487,53 @@ export default function AiPage() {
   }
 
   useEffect(() => {
-    const productsQuery = query(collection(db, "products"));
+    let active = true;
 
-    const unsubscribe = onSnapshot(productsQuery, (snapshot) => {
-      const items: Product[] = [];
+    async function loadProductsFromFile() {
+      try {
+        setLoadingProducts(true);
 
-      snapshot.forEach((document) => {
-        const data = document.data();
-        items.push({
-          id: data.id || document.id,
-          icon: data.icon || "🛒",
-          name: data.name || document.id,
-          category: data.category || "Другое",
-          ingredientId: data.ingredientId,
-          aliases: data.aliases || [],
-          search: data.search || [],
-          mergedIds: data.mergedIds || [],
-        });
-      });
+        const response = await fetch("/data/products_v8_ready_for_firebase.json");
 
-      setProducts(items);
-      setLoadingProducts(false);
-    });
+        if (!response.ok) {
+          throw new Error(`Products JSON load failed: ${response.status}`);
+        }
 
-    return () => unsubscribe();
+        const rawProducts = await response.json();
+
+        const items: Product[] = Array.isArray(rawProducts)
+          ? rawProducts.map((product: any, index: number) => ({
+              id: product.id || `product_${index}`,
+              icon: product.icon || "🛒",
+              name: product.name || product.id || `Товар ${index + 1}`,
+              category: product.category || "Другое",
+              ingredientId: product.ingredientId,
+              aliases: product.aliases || [],
+              search: product.search || [],
+              mergedIds: product.mergedIds || [],
+            }))
+          : [];
+
+        if (active) {
+          setProducts(items);
+        }
+      } catch (error) {
+        console.error("AI products local load error", error);
+        if (active) {
+          setProducts([]);
+        }
+      } finally {
+        if (active) {
+          setLoadingProducts(false);
+        }
+      }
+    }
+
+    loadProductsFromFile();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -550,43 +568,62 @@ export default function AiPage() {
   }, [familyId]);
 
   useEffect(() => {
-    async function loadAllRecipes() {
+    let active = true;
+
+    async function loadAllRecipesFromFile() {
       try {
         setLoadingSuggested(true);
 
-        const snapshot = await getDocs(collection(db, "recipes"));
-        const items: Recipe[] = [];
+        const response = await fetch("/data/recipes_all.json");
 
-        snapshot.forEach((document) => {
-          const data = document.data();
+        if (!response.ok) {
+          throw new Error(`Recipes JSON load failed: ${response.status}`);
+        }
 
-          items.push({
-            id: data.id || document.id,
-            title: data.title || "Без названия",
-            category: data.category || "Рецепт",
-            cuisine: data.cuisine,
-            difficulty: data.difficulty,
-            cookingTime: data.cookingTime,
-            cookingTimeText: data.cookingTimeText,
-            time: data.time,
-            description: data.description,
-            ingredientIds: data.ingredientIds || [],
-            optionalIngredientIds: data.optionalIngredientIds || [],
-            steps: data.steps || [],
-            searchTitle: data.searchTitle || normalizeText(data.title || ""),
-          });
-        });
+        const rawRecipes = await response.json();
 
-        setSuggestedRecipes(items);
+        const items: Recipe[] = Array.isArray(rawRecipes)
+          ? rawRecipes.map((recipe: any, index: number) => {
+              const title = recipe.title || recipe.name || "Без названия";
+
+              return {
+                id: recipe.id || recipe.slug || `recipe_${index}`,
+                title,
+                category: recipe.category || "Рецепт",
+                cuisine: recipe.cuisine,
+                difficulty: recipe.difficulty,
+                cookingTime: recipe.cookingTime,
+                cookingTimeText: recipe.cookingTimeText,
+                time: recipe.time,
+                description: recipe.description,
+                ingredientIds: recipe.ingredientIds || [],
+                optionalIngredientIds: recipe.optionalIngredientIds || [],
+                steps: recipe.steps || [],
+                searchTitle: recipe.searchTitle || normalizeText(title),
+              };
+            })
+          : [];
+
+        if (active) {
+          setSuggestedRecipes(items);
+        }
       } catch (error) {
-        console.error("AI recipes load error", error);
-        setSuggestedRecipes([]);
+        console.error("AI recipes local load error", error);
+        if (active) {
+          setSuggestedRecipes([]);
+        }
       } finally {
-        setLoadingSuggested(false);
+        if (active) {
+          setLoadingSuggested(false);
+        }
       }
     }
 
-    loadAllRecipes();
+    loadAllRecipesFromFile();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -665,50 +702,24 @@ export default function AiPage() {
       return;
     }
 
-    async function searchRecipesFromBook() {
-      try {
-        setLoadingSearch(true);
+    setLoadingSearch(true);
 
-        const recipesQuery = query(
-          collection(db, "recipes"),
-          orderBy("searchTitle"),
-          startAt(searchText),
-          endAt(`${searchText}\uf8ff`),
-          limit(40),
-        );
+    const timer = setTimeout(() => {
+      const items = suggestedRecipes
+        .filter((recipe) => {
+          const title = normalizeText(recipe.title);
+          const searchTitle = normalizeText(recipe.searchTitle || recipe.title);
 
-        const snapshot = await getDocs(recipesQuery);
+          return title.includes(searchText) || searchTitle.includes(searchText);
+        })
+        .slice(0, 40);
 
-        const items: Recipe[] = snapshot.docs.map((document) => {
-          const data = document.data();
-          return {
-            id: data.id || document.id,
-            title: data.title || "Без названия",
-            category: data.category || "Рецепт",
-            cuisine: data.cuisine,
-            difficulty: data.difficulty,
-            cookingTime: data.cookingTime,
-            cookingTimeText: data.cookingTimeText,
-            time: data.time,
-            description: data.description,
-            ingredientIds: data.ingredientIds || [],
-            optionalIngredientIds: data.optionalIngredientIds || [],
-            steps: data.steps || [],
-            searchTitle: data.searchTitle || normalizeText(data.title || ""),
-          };
-        });
+      setSearchRecipes(items);
+      setLoadingSearch(false);
+    }, 250);
 
-        setSearchRecipes(items);
-      } catch (error) {
-        console.error("AI recipe search error", error);
-      } finally {
-        setLoadingSearch(false);
-      }
-    }
-
-    const timer = setTimeout(searchRecipesFromBook, 350);
     return () => clearTimeout(timer);
-  }, [search]);
+  }, [search, suggestedRecipes]);
 
   const fridgeIngredientIds = useMemo(() => {
     const ids: string[] = [];
@@ -994,37 +1005,15 @@ export default function AiPage() {
       return;
     }
 
-    try {
-      const recipeDoc = await getDoc(doc(db, "recipes", recipeId));
+    const recipe = suggestedRecipes.find((item) => item.id === recipeId);
 
-      if (!recipeDoc.exists()) {
-        setMessage("⚠️ Рецепт не найден в базе.");
-        return;
-      }
-
-      const data = recipeDoc.data();
-      const recipe: Recipe = {
-        id: data.id || recipeDoc.id,
-        title: data.title || "Без названия",
-        category: data.category || "Рецепт",
-        cuisine: data.cuisine,
-        difficulty: data.difficulty,
-        cookingTime: data.cookingTime,
-        cookingTimeText: data.cookingTimeText,
-        time: data.time,
-        description: data.description,
-        ingredientIds: data.ingredientIds || [],
-        optionalIngredientIds: data.optionalIngredientIds || [],
-        steps: data.steps || [],
-        searchTitle: data.searchTitle || normalizeText(data.title || ""),
-      };
-
-      setSelectedRecipe(buildMatch(recipe));
-      setMessage("");
-    } catch (error) {
-      console.error("OPEN RECIPE ERROR", error);
-      setMessage("⚠️ Не получилось открыть рецепт.");
+    if (!recipe) {
+      setMessage("⚠️ Рецепт не найден в локальной базе.");
+      return;
     }
+
+    setSelectedRecipe(buildMatch(recipe));
+    setMessage("");
   }
 
   async function toggleFavoriteRecipe(recipe: Recipe) {
@@ -1845,7 +1834,7 @@ export default function AiPage() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="fixed inset-0 z-50 bg-black/40 px-4 py-6"
+              className="fixed inset-0 z-[100] bg-black/40 px-4 py-6"
             >
               <motion.div
                 initial={{ opacity: 0, y: 24, scale: 0.96 }}
@@ -1879,7 +1868,7 @@ export default function AiPage() {
                   </div>
                 </div>
 
-                <div className="overflow-y-auto p-5">
+                <div className="overflow-y-auto p-5 pb-40">
                   <div className="mb-5 rounded-3xl bg-slate-50 p-4">
                     <div className="flex items-center justify-between">
                       <div>
