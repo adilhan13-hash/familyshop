@@ -49,6 +49,11 @@ type Product = {
   recipeIngredient?: boolean;
   fridgeAllowed?: boolean;
   shoppingAllowed?: boolean;
+  source?: string;
+  custom?: boolean;
+  createdBy?: string;
+  createdByUser?: string;
+  manuallyCreated?: boolean;
 };
 
 export default function ShoppingPage() {
@@ -232,6 +237,17 @@ export default function ShoppingPage() {
     return "Добавлено вручную";
   }
 
+  function isManualProduct(product: Product) {
+    return Boolean(
+      product.manuallyCreated ||
+        product.custom ||
+        product.source === "user_created" ||
+        product.createdBy ||
+        product.createdByUser ||
+        product.category === "Добавлено вручную"
+    );
+  }
+
   function showMessage(text: string) {
     setMessage(text);
 
@@ -258,6 +274,11 @@ export default function ShoppingPage() {
       recipeIngredient: Boolean(data.recipeIngredient),
       fridgeAllowed: data.fridgeAllowed !== false,
       shoppingAllowed: data.shoppingAllowed !== false,
+      source: data.source || "",
+      custom: Boolean(data.custom),
+      createdBy: data.createdBy || "",
+      createdByUser: data.createdByUser || "",
+      manuallyCreated: Boolean(data.manuallyCreated),
     };
   }
 
@@ -640,6 +661,11 @@ export default function ShoppingPage() {
       recipeIngredient: false,
       fridgeAllowed: true,
       shoppingAllowed: true,
+      source: "user_created",
+      custom: true,
+      createdBy: appUser?.uid || "unknown",
+      createdByUser: appUser?.uid || "unknown",
+      manuallyCreated: true,
     };
 
     const alreadyExistsInShopping = shoppingList.some((item) => {
@@ -743,6 +769,43 @@ export default function ShoppingPage() {
       showMessage("❌ Не получилось создать товар. Проверь лимиты Firebase.");
     } finally {
       setCreatingProduct(false);
+    }
+  }
+
+  async function deleteManualProduct(product: Product) {
+    if (!familyId) return;
+
+    const resolvedProduct = getResolvedProduct(product);
+    const cleanName = cleanProductName(resolvedProduct.name);
+
+    if (!isManualProduct(resolvedProduct)) {
+      window.alert("Удалять из базы можно только товары, которые добавлены вручную.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Удалить товар “${cleanName}” из базы продуктов?\n\nОн пропадёт из поиска, избранного и часто покупаемых. Старые покупки, холодильник и логи не трогаем.`
+    );
+
+    if (!confirmed) return;
+
+    try {
+      await deleteDoc(doc(db, "products", resolvedProduct.id));
+      await deleteDoc(
+        doc(db, "families", familyId, "favoriteProducts", resolvedProduct.id)
+      );
+      await deleteDoc(
+        doc(db, "families", familyId, "frequentProducts", resolvedProduct.id)
+      );
+
+      setAllProducts((prev) =>
+        prev.filter((item) => item.id !== resolvedProduct.id)
+      );
+
+      showMessage(`🗑️ Товар удалён из базы: ${cleanName}`);
+    } catch (error) {
+      console.error("DELETE PRODUCT ERROR", error);
+      showMessage("❌ Не получилось удалить товар. Проверь лимиты Firebase.");
     }
   }
 
@@ -890,21 +953,38 @@ export default function ShoppingPage() {
             ingredientId,
           );
           const favorite = isFavorite(product);
+          const manualProduct = isManualProduct(product);
 
           return (
             <div key={product.id} className="relative">
+              {manualProduct && (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    deleteManualProduct(product);
+                  }}
+                  className="absolute left-1 top-1 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-red-500 text-sm text-white shadow-md"
+                  title="Удалить товар из базы"
+                  aria-label="Удалить товар из базы"
+                >
+                  🗑️
+                </button>
+              )}
+
               <button
                 type="button"
                 onClick={(event) => {
                   event.stopPropagation();
                   toggleFavorite(product);
                 }}
-                className={`absolute right-2 top-2 z-10 flex h-7 w-7 items-center justify-center rounded-full text-base shadow-sm transition ${
+                className={`absolute right-1 top-1 z-10 flex h-7 w-7 items-center justify-center rounded-full text-base shadow-sm transition ${
                   favorite
                     ? "bg-yellow-100 text-yellow-600"
                     : "bg-white text-slate-500"
                 }`}
                 title={favorite ? "Убрать из избранного" : "Добавить в избранное"}
+                aria-label={favorite ? "Убрать из избранного" : "Добавить в избранное"}
               >
                 {favorite ? "★" : "☆"}
               </button>

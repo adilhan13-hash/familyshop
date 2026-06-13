@@ -1374,7 +1374,7 @@ export default function AiPage() {
                 }}
                 className="min-w-0 flex-1 text-left"
               >
-                <p className="truncate font-semibold text-slate-900">
+                <p className="font-semibold leading-snug text-slate-900 break-words">
                   {recipeKind(item) === "salad"
                     ? "🥗"
                     : recipeKind(item) === "soup"
@@ -1812,24 +1812,24 @@ export default function AiPage() {
 
               <ToggleBlock
                 title="🥛 Есть дома"
-                count={fridgeIngredientIds.length}
+                count={fridgeItems.length}
                 open={showFridge}
                 onToggle={() => setShowFridge((prev) => !prev)}
               >
-                {loadingFridge || loadingProducts ? (
+                {loadingFridge ? (
                   <p className="text-sm text-slate-500">Загрузка...</p>
-                ) : fridgeIngredientIds.length === 0 ? (
+                ) : fridgeItems.length === 0 ? (
                   <p className="text-sm text-slate-500">
                     Добавь продукты в холодильник, и AI подберёт блюда.
                   </p>
                 ) : (
                   <div className="flex flex-wrap gap-2">
-                    {fridgeIngredientIds.slice(0, 80).map((id) => (
+                    {fridgeItems.map((item) => (
                       <span
-                        key={id}
+                        key={item.id}
                         className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-700"
                       >
-                        {getProductLabel(id)}
+                        {item.icon || "🥛"} {item.productName || item.name}
                       </span>
                     ))}
                   </div>
