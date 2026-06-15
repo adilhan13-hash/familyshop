@@ -70,6 +70,8 @@ export default function ShoppingPage() {
   const [showAllFrequent, setShowAllFrequent] = useState(false);
   const [message, setMessage] = useState("");
   const [creatingProduct, setCreatingProduct] = useState(false);
+  const [busyProductId, setBusyProductId] = useState<string | null>(null);
+  const [busyShoppingId, setBusyShoppingId] = useState<string | null>(null);
   const messageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [loadingShopping, setLoadingShopping] = useState(true);
@@ -288,6 +290,101 @@ export default function ShoppingPage() {
     };
   }
 
+  function productFromRaw(raw: any, index: number): Product | null {
+    const rawName = raw?.name || raw?.title || raw?.id;
+
+    if (!rawName) return null;
+
+    const id = raw.id || raw.productId || makeSafeId(rawName) || `product_${index}`;
+
+    return {
+      id,
+      icon: raw.icon || "🛒",
+      name: cleanProductName(rawName),
+      category: raw.category || "Другое",
+      ingredientId: raw.ingredientId || id,
+      aliases: Array.isArray(raw.aliases) ? raw.aliases : [],
+      search: Array.isArray(raw.search) ? raw.search : [],
+      purchaseCount: raw.purchaseCount || 0,
+      popular: Boolean(raw.popular),
+      recipeIngredient: Boolean(raw.recipeIngredient),
+      fridgeAllowed: raw.fridgeAllowed !== false,
+      shoppingAllowed: raw.shoppingAllowed !== false,
+      source: raw.source || "",
+      custom: Boolean(raw.custom),
+      createdBy: raw.createdBy || "",
+      createdByUser: raw.createdByUser || "",
+      manuallyCreated: Boolean(raw.manuallyCreated),
+    };
+  }
+
+  const allProductsIndex = useMemo(() => {
+    const byId = new Map<string, Product>();
+    const byIngredientId = new Map<string, Product>();
+    const byName = new Map<string, Product>();
+    const byExactSearch = new Map<string, Product>();
+    const searchTextById = new Map<string, string>();
+
+    for (const product of allProducts) {
+      byId.set(product.id, product);
+
+      if (product.ingredientId) {
+        byIngredientId.set(product.ingredientId, product);
+      }
+
+      byName.set(normalizeName(product.name), product);
+
+      const searchValues = [
+        product.id,
+        product.ingredientId || "",
+        product.name,
+        product.category || "",
+        ...(product.aliases || []),
+        ...(product.search || []),
+      ];
+
+      for (const value of searchValues) {
+        const key = normalizeName(String(value || ""));
+        if (key && !byExactSearch.has(key)) {
+          byExactSearch.set(key, product);
+        }
+      }
+
+      searchTextById.set(product.id, searchValues.map((value) => normalizeName(String(value || ""))).join(" "));
+    }
+
+    return { byId, byIngredientId, byName, byExactSearch, searchTextById };
+  }, [allProducts]);
+
+  const shoppingKeySet = useMemo(() => {
+    const set = new Set<string>();
+
+    for (const item of shoppingList) {
+      if (item.productId) set.add(`product:${item.productId}`);
+      if (item.ingredientId) set.add(`ingredient:${item.ingredientId}`);
+      if (item.name) set.add(`name:${normalizeName(item.name)}`);
+      if (item.productName) set.add(`productName:${normalizeName(item.productName)}`);
+    }
+
+    return set;
+  }, [shoppingList]);
+
+  const fridgeKeySet = useMemo(() => {
+    const set = new Set<string>();
+
+    for (const item of fridgeList) {
+      if (item.productId) set.add(`product:${item.productId}`);
+      if (item.ingredientId) set.add(`ingredient:${item.ingredientId}`);
+      if (item.name) set.add(`name:${normalizeName(item.name)}`);
+    }
+
+    return set;
+  }, [fridgeList]);
+
+  const favoriteIdSet = useMemo(() => {
+    return new Set(favoriteProducts.map((product) => product.id));
+  }, [favoriteProducts]);
+
   function findCatalogProduct(product: Product | ShoppingItem) {
     const productId = "productId" in product ? product.productId : product.id;
     const ingredientId = product.ingredientId;
@@ -296,15 +393,19 @@ export default function ShoppingPage() {
         ? cleanProductName(product.productName)
         : cleanProductName(product.name || "");
 
-    return allProducts.find((catalogProduct) => {
-      if (productId && catalogProduct.id === productId) return true;
-      if (ingredientId && catalogProduct.ingredientId === ingredientId) {
-        return true;
-      }
-      if (ingredientId && catalogProduct.id === ingredientId) return true;
+    if (productId && allProductsIndex.byId.has(productId)) {
+      return allProductsIndex.byId.get(productId);
+    }
 
-      return normalizeName(catalogProduct.name) === normalizeName(cleanName);
-    });
+    if (ingredientId && allProductsIndex.byIngredientId.has(ingredientId)) {
+      return allProductsIndex.byIngredientId.get(ingredientId);
+    }
+
+    if (ingredientId && allProductsIndex.byId.has(ingredientId)) {
+      return allProductsIndex.byId.get(ingredientId);
+    }
+
+    return allProductsIndex.byName.get(normalizeName(cleanName));
   }
 
   function getResolvedProduct(product: Product): Product {
@@ -434,24 +535,47 @@ export default function ShoppingPage() {
   }, [familyId]);
 
   useEffect(() => {
-    const productsQuery = query(
-      collection(db, "products"),
-      orderBy("name"),
-    );
+    let active = true;
 
-    const unsubscribe = onSnapshot(productsQuery, (snapshot) => {
-      const items: Product[] = [];
+    async function loadProductsFromFile() {
+      try {
+        setLoadingProducts(true);
 
-      snapshot.forEach((document) => {
-        const product = productFromDoc(document);
-        if (product) items.push(product);
-      });
+        const response = await fetch("/data/products_v8_ready_for_firebase.json");
 
-      setAllProducts(items);
-      setLoadingProducts(false);
-    });
+        if (!response.ok) {
+          throw new Error(`Products JSON load failed: ${response.status}`);
+        }
 
-    return () => unsubscribe();
+        const rawProducts = await response.json();
+        const items: Product[] = Array.isArray(rawProducts)
+          ? (rawProducts
+              .map((product: any, index: number) => productFromRaw(product, index))
+              .filter(Boolean) as Product[])
+          : [];
+
+        items.sort((a, b) => a.name.localeCompare(b.name, "ru"));
+
+        if (active) {
+          setAllProducts(items);
+        }
+      } catch (error) {
+        console.warn("Shopping products local load warning", error);
+        if (active) {
+          setAllProducts([]);
+        }
+      } finally {
+        if (active) {
+          setLoadingProducts(false);
+        }
+      }
+    }
+
+    loadProductsFromFile();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   const visibleSearchProducts = useMemo(() => {
@@ -461,9 +585,8 @@ export default function ShoppingPage() {
 
     function getSearchScore(product: Product) {
       const name = normalizeName(product.name);
-      const category = normalizeName(product.category || "");
       const terms = (product.search || []).map((item) => normalizeName(item));
-      const allText = [name, category, ...terms].join(" ");
+      const allText = allProductsIndex.searchTextById.get(product.id) || [name, ...terms].join(" ");
 
       if (name === text) return 0;
       if (terms.some((term) => term === text)) return 1;
@@ -501,10 +624,10 @@ export default function ShoppingPage() {
     });
 
     return Array.from(uniqueProducts.values()).slice(0, 24);
-  }, [allProducts, search]);
+  }, [allProducts, allProductsIndex.searchTextById, search]);
 
   function isFavorite(product: Product) {
-    return favoriteProducts.some((item) => item.id === product.id);
+    return favoriteIdSet.has(product.id);
   }
 
   function isProductInFridge(
@@ -512,21 +635,19 @@ export default function ShoppingPage() {
     name?: string,
     ingredientId?: string,
   ) {
-    return fridgeList.some((fridgeItem) => {
-      if (ingredientId && fridgeItem.ingredientId) {
-        return fridgeItem.ingredientId === ingredientId;
-      }
+    if (ingredientId && fridgeKeySet.has(`ingredient:${ingredientId}`)) {
+      return true;
+    }
 
-      if (productId && fridgeItem.productId) {
-        return fridgeItem.productId === productId;
-      }
+    if (productId && fridgeKeySet.has(`product:${productId}`)) {
+      return true;
+    }
 
-      if (name) {
-        return normalizeName(fridgeItem.name) === normalizeName(name);
-      }
+    if (name && fridgeKeySet.has(`name:${normalizeName(name)}`)) {
+      return true;
+    }
 
-      return false;
-    });
+    return false;
   }
 
   async function toggleFavorite(product: Product) {
@@ -566,19 +687,17 @@ export default function ShoppingPage() {
   }
 
   async function addProduct(product: Product) {
-    if (!familyId) return;
+    if (!familyId || busyProductId) return;
 
     const resolvedProduct = getResolvedProduct(product);
     const cleanName = cleanProductName(resolvedProduct.name);
     const fullName = `${resolvedProduct.icon} ${cleanName}`;
     const ingredientId = resolvedProduct.ingredientId || resolvedProduct.id;
 
-    const alreadyExists = shoppingList.some((item) => {
-      if (item.ingredientId && item.ingredientId === ingredientId) return true;
-      if (item.productId && item.productId === resolvedProduct.id) return true;
-
-      return normalizeName(item.name) === normalizeName(fullName);
-    });
+    const alreadyExists =
+      shoppingKeySet.has(`ingredient:${ingredientId}`) ||
+      shoppingKeySet.has(`product:${resolvedProduct.id}`) ||
+      shoppingKeySet.has(`name:${normalizeName(fullName)}`);
 
     if (alreadyExists) return;
 
@@ -596,29 +715,38 @@ export default function ShoppingPage() {
       if (!confirmed) return;
     }
 
-    await addDoc(collection(db, "families", familyId, "shopping"), {
-      name: fullName,
-      productName: cleanName,
-      icon: resolvedProduct.icon,
-      productId: resolvedProduct.id,
-      ingredientId,
-      category: resolvedProduct.category,
-      createdAt: serverTimestamp(),
-    });
+    try {
+      setBusyProductId(resolvedProduct.id);
 
-    await addActivity({
-      familyId,
-      userId: appUser?.uid || "unknown",
-      userName: appUser?.displayName || "Без имени",
-      type: "shopping_add",
-      title: "Добавил в покупки",
-      message: fullName,
-      emoji: resolvedProduct.icon || "🛒",
-      itemName: fullName,
-    });
+      await addDoc(collection(db, "families", familyId, "shopping"), {
+        name: fullName,
+        productName: cleanName,
+        icon: resolvedProduct.icon,
+        productId: resolvedProduct.id,
+        ingredientId,
+        category: resolvedProduct.category,
+        createdAt: serverTimestamp(),
+      });
 
-    showMessage(`🛒 Добавлено в покупки: ${cleanName}`);
-    setSearch("");
+      await addActivity({
+        familyId,
+        userId: appUser?.uid || "unknown",
+        userName: appUser?.displayName || "Без имени",
+        type: "shopping_add",
+        title: "Добавил в покупки",
+        message: fullName,
+        emoji: resolvedProduct.icon || "🛒",
+        itemName: fullName,
+      });
+
+      showMessage(`🛒 Добавлено в покупки: ${cleanName}`);
+      setSearch("");
+    } catch (error) {
+      console.error("ADD PRODUCT ERROR", error);
+      showMessage("❌ Не получилось добавить товар. Попробуй ещё раз.");
+    } finally {
+      setBusyProductId(null);
+    }
   }
 
   async function addCustomProduct(rawName: string, addToFavorites = false) {
@@ -629,15 +757,7 @@ export default function ShoppingPage() {
 
     if (normalized.length < 2) return;
 
-    const existingProduct = allProducts.find((product) => {
-      const productValues = [
-        product.name,
-        ...(product.aliases || []),
-        ...(product.search || []),
-      ];
-
-      return productValues.some((value) => normalizeName(value) === normalized);
-    });
+    const existingProduct = allProductsIndex.byExactSearch.get(normalized);
 
     if (existingProduct) {
       await addProduct(existingProduct);
@@ -674,15 +794,11 @@ export default function ShoppingPage() {
       manuallyCreated: true,
     };
 
-    const alreadyExistsInShopping = shoppingList.some((item) => {
-      if (item.productId && item.productId === productId) return true;
-      if (item.ingredientId && item.ingredientId === productId) return true;
-
-      return (
-        normalizeName(item.productName || item.name) === normalized ||
-        normalizeName(item.name) === normalizeName(`${icon} ${cleanName}`)
-      );
-    });
+    const alreadyExistsInShopping =
+      shoppingKeySet.has(`product:${productId}`) ||
+      shoppingKeySet.has(`ingredient:${productId}`) ||
+      shoppingKeySet.has(`productName:${normalized}`) ||
+      shoppingKeySet.has(`name:${normalizeName(`${icon} ${cleanName}`)}`);
 
     const existsInFridge = isProductInFridge(
       productId,
@@ -856,7 +972,11 @@ export default function ShoppingPage() {
   }
 
   async function markAsBought(item: ShoppingItem) {
-    if (!familyId) return;
+    if (!familyId || busyShoppingId) return;
+
+    setBusyShoppingId(item.id);
+
+    try {
 
     const productId = item.productId || undefined;
     const ingredientId = item.ingredientId || item.productId || undefined;
@@ -895,10 +1015,20 @@ export default function ShoppingPage() {
     });
 
     showMessage(`✅ Куплено и перенесено в холодильник: ${item.name}`);
+    } catch (error) {
+      console.error("MARK BOUGHT ERROR", error);
+      showMessage("❌ Не получилось отметить покупку. Попробуй ещё раз.");
+    } finally {
+      setBusyShoppingId(null);
+    }
   }
 
   async function removeFromShopping(item: ShoppingItem) {
-    if (!familyId) return;
+    if (!familyId || busyShoppingId) return;
+
+    setBusyShoppingId(item.id);
+
+    try {
 
     await deleteDoc(doc(db, "families", familyId, "shopping", item.id));
 
@@ -914,6 +1044,12 @@ export default function ShoppingPage() {
     });
 
     showMessage(`🗑️ Убрали из покупок: ${item.name}`);
+    } catch (error) {
+      console.error("REMOVE SHOPPING ERROR", error);
+      showMessage("❌ Не получилось убрать товар. Попробуй ещё раз.");
+    } finally {
+      setBusyShoppingId(null);
+    }
   }
 
   function ProductGrid({
@@ -941,17 +1077,10 @@ export default function ShoppingPage() {
           const fullName = `${product.icon} ${cleanName}`;
           const ingredientId = product.ingredientId || product.id;
 
-          const isAdded = shoppingList.some((item) => {
-            if (item.ingredientId && item.ingredientId === ingredientId) {
-              return true;
-            }
-
-            if (item.productId && item.productId === product.id) {
-              return true;
-            }
-
-            return normalizeName(item.name) === normalizeName(fullName);
-          });
+          const isAdded =
+            shoppingKeySet.has(`ingredient:${ingredientId}`) ||
+            shoppingKeySet.has(`product:${product.id}`) ||
+            shoppingKeySet.has(`name:${normalizeName(fullName)}`);
 
           const existsInFridge = isProductInFridge(
             product.id,
@@ -999,7 +1128,8 @@ export default function ShoppingPage() {
                 whileTap={{ scale: 0.92 }}
                 whileHover={{ scale: 1.04 }}
                 onClick={() => addProduct(product)}
-                className={`min-h-[112px] w-full rounded-2xl p-3 text-center text-sm transition ${
+                disabled={Boolean(busyProductId)}
+                className={`min-h-[112px] w-full rounded-2xl p-3 text-center text-sm transition disabled:opacity-60 ${
                   isAdded
                     ? "bg-green-100 text-green-700"
                     : existsInFridge
@@ -1136,18 +1266,20 @@ export default function ShoppingPage() {
                             whileTap={{ scale: 0.95 }}
                             whileHover={{ scale: 1.02 }}
                             onClick={() => markAsBought(item)}
-                            className="flex-1 rounded-xl bg-green-500 px-3 py-2 text-sm font-medium text-white"
+                            disabled={Boolean(busyShoppingId)}
+                            className="flex-1 rounded-xl bg-green-500 px-3 py-2 text-sm font-medium text-white disabled:opacity-60"
                           >
-                            Куплено
+                            {busyShoppingId === item.id ? "..." : "Куплено"}
                           </motion.button>
 
                           <motion.button
                             whileTap={{ scale: 0.95 }}
                             whileHover={{ scale: 1.02 }}
                             onClick={() => removeFromShopping(item)}
-                            className="flex-1 rounded-xl bg-slate-200 px-3 py-2 text-sm font-medium text-slate-700"
+                            disabled={Boolean(busyShoppingId)}
+                            className="flex-1 rounded-xl bg-slate-200 px-3 py-2 text-sm font-medium text-slate-700 disabled:opacity-60"
                           >
-                            Убрать
+                            {busyShoppingId === item.id ? "..." : "Убрать"}
                           </motion.button>
                         </div>
                       </motion.div>

@@ -342,11 +342,7 @@ function ToggleBlock({
   children: ReactNode;
 }) {
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 14 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="rounded-3xl bg-white p-5 shadow-sm"
-    >
+    <div className="rounded-3xl bg-white p-5 shadow-sm">
       <button
         type="button"
         onClick={onToggle}
@@ -377,7 +373,7 @@ function ToggleBlock({
           </motion.div>
         )}
       </AnimatePresence>
-    </motion.div>
+    </div>
   );
 }
 
@@ -405,6 +401,7 @@ export default function AiPage() {
   const [matchedResultsState, setMatchedResultsState] = useState<MatchResult[]>(
     [],
   );
+  const [recipesNeedRefresh, setRecipesNeedRefresh] = useState(false);
   const [loadingSearch, setLoadingSearch] = useState(false);
   const [loadingFavorites, setLoadingFavorites] = useState(true);
   const [addingRecipeId, setAddingRecipeId] = useState<string | null>(null);
@@ -419,9 +416,12 @@ export default function AiPage() {
   const [showSearch, setShowSearch] = useState(false);
   const [showFavorites, setShowFavorites] = useState(false);
   const [showQuick, setShowQuick] = useState(false);
+  const [showQuickBreakfast, setShowQuickBreakfast] = useState(false);
   const [showQuickSalads, setShowQuickSalads] = useState(false);
   const [showQuickSoups, setShowQuickSoups] = useState(false);
   const [showQuickMains, setShowQuickMains] = useState(false);
+  const [showQuickSides, setShowQuickSides] = useState(false);
+  const [showQuickBaking, setShowQuickBaking] = useState(false);
   const [showKids, setShowKids] = useState(false);
   const [showHoliday, setShowHoliday] = useState(false);
   const [showFridge, setShowFridge] = useState(false);
@@ -440,7 +440,7 @@ export default function AiPage() {
   function refreshRecipesManually() {
     setRecipeRefreshSeed(Date.now() + Math.floor(Math.random() * 1000000));
     setMealRecipeOverrides({});
-    setMessage("🔄 Рецепты обновлены");
+    runRecipeMatching();
   }
 
   const productsMap = useMemo(() => {
@@ -567,218 +567,484 @@ export default function AiPage() {
   }
 
   function makeShoppingDocId(value: string) {
-    return normalizeIngredientKey(value || "unknown").slice(0, 120) || "unknown";
+    return (
+      normalizeIngredientKey(value || "unknown").slice(0, 120) || "unknown"
+    );
+  }
+
+  function makeFavoriteRecipeDocId(recipe: Recipe) {
+    return (
+      normalizeIngredientKey(recipe.id || recipe.title || "recipe").slice(0, 120) ||
+      "recipe"
+    );
   }
 
   function hasAnyWord(text: string, words: string[]) {
-    return words.some((word) => text.includes(normalizeText(word)));
+    const preparedText = ` ${normalizeText(text)} `;
+    return words.some(
+      (word) =>
+        preparedText.includes(` ${normalizeText(word)} `) ||
+        preparedText.includes(normalizeText(word)),
+    );
   }
 
-  function getQuickRecipeKind(recipe: Recipe) {
-    const fullText = getRecipeSearchText(recipe);
-    const title = normalizeText(recipe.title || "");
-    const category = normalizeText(
-      `${recipe.category || ""} ${recipe.categorySlug || ""}`,
+  function getRecipeTitleCategoryText(recipe: Recipe) {
+    return normalizeText(
+      `${recipe.title || ""} ${recipe.category || ""} ${recipe.categorySlug || ""} ${(
+        recipe.tags || []
+      )
+        .map((tag) => `${tag.name || ""} ${tag.slug || ""}`)
+        .join(" ")}`,
     );
-    const titleCategory = normalizeText(`${title} ${category}`);
+  }
 
-    const isSalad =
-      /\b(салат|салаты|винегрет)\b/.test(titleCategory) ||
-      category.includes("салат");
+  function getRecipeIngredientText(recipe: Recipe) {
+    return normalizeText(
+      `${(recipe.rawIngredients || [])
+        .map(
+          (ingredient) =>
+            `${ingredient.name || ""} ${ingredient.ingredientId || ""} ${ingredient.quantity || ""}`,
+        )
+        .join(" ")} ${(recipe.ingredientIds || []).join(" ")}`,
+    );
+  }
 
-    if (isSalad) {
+  function recipeHasTitleSignal(recipe: Recipe, words: string[]) {
+    return hasAnyWord(getRecipeTitleCategoryText(recipe), words);
+  }
+
+  function isBadRecipeForAi(recipe: Recipe) {
+    const title = normalizeText(recipe.title || "");
+    const titleCategory = getRecipeTitleCategoryText(recipe);
+    const allText = getRecipeSearchText(recipe);
+    const stepsCount = recipe.steps?.length || 0;
+    const ingredientCount =
+      recipe.rawIngredients?.length || recipe.ingredientIds?.length || 0;
+
+    const badCategory = hasAnyWord(titleCategory, [
+      "соусы",
+      "соус",
+      "маринад",
+      "маринады",
+      "заготовки",
+      "консервация",
+      "соленья",
+      "молочные продукты домашние",
+      "сыр домашний",
+      "творог домашний",
+      "домашний сыр",
+    ]);
+
+    const badTitle = hasAnyWord(title, [
+      "соус",
+      "маринад",
+      "заправка",
+      "заготовка",
+      "заготовки",
+      "консервация",
+      "рассол",
+      "квас",
+      "закваска",
+      "домашний майонез",
+      "домашний сыр",
+      "сыр домашний",
+      "творог домашний",
+    ]);
+
+    const badTechnical = hasAnyWord(allText, [
+      "соус для",
+      "маринад для",
+      "заготовки на зиму",
+    ]);
+
+    if (badCategory || badTitle || badTechnical) return true;
+
+    if (ingredientCount < 2 && stepsCount < 2) return true;
+
+    return false;
+  }
+
+  function isRealDish(recipe: Recipe) {
+    if (isBadRecipeForAi(recipe)) return false;
+
+    const ingredientCount =
+      recipe.rawIngredients?.length || recipe.ingredientIds?.length || 0;
+    const stepsCount = recipe.steps?.length || 0;
+
+    return ingredientCount >= 2 || stepsCount >= 2;
+  }
+
+  function getSearchScore(recipe: Recipe, query: string) {
+    const searchText = normalizeText(query);
+    if (searchText.length < 2) return 0;
+
+    const title = normalizeText(recipe.title || "");
+    const titleCategory = getRecipeTitleCategoryText(recipe);
+    const ingredients = getRecipeIngredientText(recipe);
+    const tags = getRecipeTagsText(recipe);
+    const allText = getRecipeSearchText(recipe);
+    const words = searchText.split(" ").filter((word) => word.length >= 2);
+
+    let score = 0;
+
+    if (title === searchText) score += 600;
+    if (title.startsWith(searchText)) score += 420;
+    if (title.includes(searchText)) score += 320;
+    if (titleCategory.includes(searchText)) score += 170;
+    if (tags.includes(searchText)) score += 110;
+    if (ingredients.includes(searchText)) score += 70;
+    if (allText.includes(searchText)) score += 35;
+
+    for (const word of words) {
+      const titleWords = title.split(" ");
+      const titleCategoryWords = titleCategory.split(" ");
+
+      if (titleWords.some((item) => item === word)) score += 110;
+      else if (titleWords.some((item) => item.startsWith(word))) score += 85;
+      else if (title.includes(word)) score += 60;
+
+      if (titleCategoryWords.some((item) => item === word)) score += 45;
+      else if (titleCategoryWords.some((item) => item.startsWith(word)))
+        score += 35;
+      else if (titleCategory.includes(word)) score += 25;
+
+      if (tags.includes(word)) score += 20;
+      if (ingredients.includes(word)) score += 12;
+      if (!allText.includes(word)) score -= 120;
+    }
+
+    if (score <= 0) return 0;
+
+    const match = buildMatch(recipe);
+    score += Math.min(match.score, 100);
+    score += Math.min(match.haveIds.length * 8, 80);
+
+    if (isBadRecipeForAi(recipe)) score -= 250;
+    if (getRecipeKind(recipe) === "other") score -= 70;
+    if ((recipe.steps?.length || 0) > 0) score += 20;
+    if (recipe.cookingTime && recipe.cookingTime > 0) score += 10;
+    if (recipe.popular) score += 12;
+    if (recipe.familyFriendly) score += 8;
+
+    return Math.max(0, score);
+  }
+
+  function getRecipeKind(recipe: Recipe) {
+    if (!isRealDish(recipe)) return "other";
+
+    const titleCategory = getRecipeTitleCategoryText(recipe);
+    const title = normalizeText(recipe.title || "");
+    const allText = getRecipeSearchText(recipe);
+    const ingredientText = getRecipeIngredientText(recipe);
+
+    const hasTitle = (words: string[]) => recipeHasTitleSignal(recipe, words);
+    const hasCategory = (words: string[]) => hasAnyWord(titleCategory, words);
+    const hasIngredients = (words: string[]) =>
+      hasAnyWord(ingredientText, words);
+
+    if (
+      hasTitle([
+        "салат",
+        "салаты",
+        "винегрет",
+        "цезарь",
+        "оливье",
+        "сельдь под шубой",
+        "селедка под шубой",
+      ]) ||
+      hasCategory(["салат", "салаты"])
+    ) {
       return "salad";
     }
 
-    const isSoup =
-      /\b(суп|супы|борщ|щи|уха|рассольник|солянка|шурпа|бульон|свекольник|харчо|лагман|лапша|гороховый|чечевичный|фасолевый)\b/.test(
-        titleCategory,
-      ) ||
-      titleCategory.includes("крем суп") ||
-      titleCategory.includes("суп пюре") ||
-      titleCategory.includes("куриный суп") ||
-      titleCategory.includes("грибной суп") ||
-      category.includes("перв");
-
-    if (isSoup) {
+    if (
+      hasTitle([
+        "суп",
+        "супы",
+        "борщ",
+        "щи",
+        "уха",
+        "рассольник",
+        "солянка",
+        "шурпа",
+        "бульон",
+        "свекольник",
+        "харчо",
+        "лагман",
+        "окрошка",
+        "крем суп",
+        "суп пюре",
+        "гороховый суп",
+        "чечевичный суп",
+        "фасолевый суп",
+      ]) ||
+      hasCategory(["первое блюдо", "первые блюда", "суп", "супы"])
+    ) {
       return "soup";
     }
 
-    const badForMain = hasAnyWord(fullText, [
-      "салат",
-      "винегрет",
-      "суп",
-      "борщ",
-      "уха",
-      "щи",
-      "солянка",
-      "рассольник",
-      "шурпа",
-      "бульон",
-      "закуска",
-      "бутерброд",
-      "соус",
-      "десерт",
-      "торт",
-      "пирог",
-      "печенье",
-      "выпечка",
-      "блины",
-      "блинчики",
-      "оладьи",
-      "оладушки",
-      "сырники",
-      "омлет",
-      "каша",
-      "напиток",
-      "коктейль",
-      "чай",
-      "кофе",
-      "компот",
-      "морс",
-      "сок",
-      "смузи",
-    ]);
-
-    if (badForMain) {
-      return "other";
+    if (
+      hasTitle([
+        "завтрак",
+        "омлет",
+        "яичница",
+        "каша",
+        "сырники",
+        "гренки",
+        "тост",
+        "бутерброд",
+        "сэндвич",
+      ]) ||
+      hasCategory(["завтрак", "завтраки"])
+    ) {
+      return "breakfast";
     }
 
-    const isMain =
-      hasAnyWord(titleCategory, [
+    if (
+      hasTitle([
+        "тесто",
+        "паста домашняя",
+        "домашняя паста",
+        "лапша домашняя",
+        "домашняя лапша",
+        "галушки",
+        "клецки",
+        "вареники",
+        "пельмени",
+        "манты",
+        "хинкали",
+        "лепешки",
+        "лепёшки",
+        "хлеб",
+        "булочка",
+        "булочки",
+        "блины",
+        "блинчики",
+        "оладьи",
+        "оладушки",
+        "пирожки",
+        "пирог",
+        "пироги",
+        "пицца",
+      ]) ||
+      hasCategory(["выпечка", "тесто", "мучные блюда"])
+    ) {
+      return "baking";
+    }
+
+    if (
+      hasTitle([
+        "торт",
+        "пирожное",
+        "печенье",
+        "кекс",
+        "десерт",
+        "ватрушка",
+        "пончики",
+        "мороженое",
+        "желе",
+      ]) ||
+      hasCategory(["десерт", "десерты"])
+    ) {
+      return "dessert";
+    }
+
+    if (
+      hasTitle([
+        "чай",
+        "кофе",
+        "компот",
+        "морс",
+        "кисель",
+        "напиток",
+        "сок",
+        "какао",
+        "смузи",
+        "коктейль",
+      ]) ||
+      hasCategory(["напитки", "напиток"])
+    ) {
+      return "drink";
+    }
+
+    const meatFishSignal =
+      hasTitle([
         "курица",
         "куриное",
         "куриный",
+        "куриная",
+        "индейка",
+        "утка",
         "мясо",
         "мясной",
         "говядина",
         "свинина",
         "баранина",
+        "конина",
+        "фарш",
         "рыба",
+        "семга",
+        "сёмга",
+        "лосось",
+        "форель",
+        "минтай",
+        "судак",
         "котлеты",
         "котлета",
         "тефтели",
-        "тефтель",
         "фрикадельки",
-        "плов",
-        "макароны",
-        "паста",
-        "рагу",
-        "жаркое",
         "гуляш",
+        "жаркое",
         "отбивные",
+        "шашлык",
+        "стейк",
+        "плов",
+        "голубцы",
+        "долма",
+        "лазанья",
+        "шаурма с курицей",
+        "паста с курицей",
+        "паста с мясом",
+        "макароны с мясом",
         "картофель с мясом",
         "картошка с мясом",
+        "рис с мясом",
+        "гречка с мясом",
       ]) ||
-      category.includes("втор") ||
-      category.includes("горяч") ||
-      category.includes("основн");
+      hasIngredients([
+        "курица",
+        "куриное филе",
+        "куриная грудка",
+        "говядина",
+        "свинина",
+        "баранина",
+        "фарш",
+        "рыба",
+        "индейка",
+      ]);
 
-    if (isMain) {
+    if (
+      meatFishSignal &&
+      !hasAnyWord(allText, ["салат", "суп", "соус", "маринад", "тесто"])
+    ) {
+      return "main";
+    }
+
+    const sideSignal =
+      hasTitle([
+        "рис",
+        "гречка",
+        "картофель",
+        "картошка",
+        "пюре",
+        "макароны",
+        "спагетти",
+        "паста",
+        "овощи на гарнир",
+        "овощное рагу",
+        "рагу овощное",
+        "деруны",
+        "драники",
+        "запеченные овощи",
+        "запечённые овощи",
+      ]) || hasCategory(["гарнир", "гарниры"]);
+
+    if (sideSignal && !meatFishSignal) {
+      return "side";
+    }
+
+    const categoryLooksLikeMain = hasCategory([
+      "второе блюдо",
+      "вторые блюда",
+      "горячее",
+      "горячие блюда",
+      "основное блюдо",
+      "основные блюда",
+    ]);
+
+    if (categoryLooksLikeMain && meatFishSignal) {
       return "main";
     }
 
     return "other";
   }
-  function isQuickRecipe(recipe: Recipe) {
-    const time = recipe.cookingTime || 0;
-    const text = getRecipeSearchText(recipe);
-    const category = normalizeText(
-      `${recipe.category || ""} ${recipe.categorySlug || ""}`,
-    );
 
-    if (time <= 0) return false;
-
-    const quickKind = getQuickRecipeKind(recipe);
-
-    if (quickKind === "soup") {
-      if (time > 45) return false;
-    } else if (time > 30) {
-      return false;
-    }
-
-    const badText = hasAnyWord(text, [
-      "торт",
-      "пирог",
-      "пирожное",
-      "печенье",
-      "кекс",
-      "булочка",
-      "булочки",
-      "пончики",
-      "ватрушка",
-      "выпечка",
-      "десерт",
-      "шоколад",
-      "шоколадный",
-      "варенье",
-      "джем",
-      "блины",
-      "блинчики",
-      "оладьи",
-      "оладушки",
-      "сырники",
-      "омлет",
-      "каша",
-      "напиток",
-      "коктейль",
-      "чай",
-      "кофе",
-      "компот",
-      "морс",
-      "сок",
-      "смузи",
-      "соус",
-      "маринад",
-      "заготовки",
-      "тесто",
-    ]);
-
-    if (badText) return false;
-
-    const badCategory = hasAnyWord(category, [
-      "выпечка",
-      "десерты",
-      "десерт",
-      "напитки",
-      "соусы",
-      "заготовки",
-      "тесто домашнее",
-      "молочные продукты домашние",
-    ]);
-
-    if (badCategory) return false;
-
-    return ["salad", "soup", "main"].includes(quickKind);
+  function getQuickRecipeKind(recipe: Recipe) {
+    const kind = getRecipeKind(recipe);
+    return ["breakfast", "salad", "soup", "main", "side", "baking"].includes(
+      kind,
+    )
+      ? kind
+      : "other";
   }
-  function isQuickSaladRecipe(recipe: Recipe) {
+
+  function isQuickRecipe(recipe: Recipe) {
+    if (!isRealDish(recipe)) return false;
+
+    const kind = getQuickRecipeKind(recipe);
     const time = recipe.cookingTime || 0;
-    return (
-      isQuickRecipe(recipe) &&
-      time <= 20 &&
-      getQuickRecipeKind(recipe) === "salad"
-    );
+
+    if (kind === "breakfast") return time === 0 || time <= 35;
+    if (kind === "salad") return time === 0 || time <= 40;
+    if (kind === "soup") return time === 0 || time <= 75;
+    if (kind === "main") return time === 0 || time <= 75;
+    if (kind === "side") return time === 0 || time <= 55;
+    if (kind === "baking") return time === 0 || time <= 90;
+
+    return false;
+  }
+
+  function isQuickBreakfastRecipe(recipe: Recipe) {
+    return isQuickRecipe(recipe) && getQuickRecipeKind(recipe) === "breakfast";
+  }
+
+  function isQuickSaladRecipe(recipe: Recipe) {
+    return isQuickRecipe(recipe) && getQuickRecipeKind(recipe) === "salad";
   }
 
   function isQuickSoupRecipe(recipe: Recipe) {
-    const time = recipe.cookingTime || 0;
-    return (
-      isQuickRecipe(recipe) &&
-      time <= 45 &&
-      getQuickRecipeKind(recipe) === "soup"
-    );
+    return isQuickRecipe(recipe) && getQuickRecipeKind(recipe) === "soup";
   }
 
   function isQuickMainRecipe(recipe: Recipe) {
-    const time = recipe.cookingTime || 0;
-    return (
-      isQuickRecipe(recipe) &&
-      time <= 30 &&
-      getQuickRecipeKind(recipe) === "main"
-    );
+    return isQuickRecipe(recipe) && getQuickRecipeKind(recipe) === "main";
+  }
+
+  function isQuickSideRecipe(recipe: Recipe) {
+    return isQuickRecipe(recipe) && getQuickRecipeKind(recipe) === "side";
+  }
+
+  function isQuickBakingRecipe(recipe: Recipe) {
+    return isQuickRecipe(recipe) && getQuickRecipeKind(recipe) === "baking";
+  }
+
+  function isLooseBreakfastRecipe(recipe: Recipe) {
+    return isRealDish(recipe) && getRecipeKind(recipe) === "breakfast";
+  }
+
+  function isLooseSaladRecipe(recipe: Recipe) {
+    return isRealDish(recipe) && getRecipeKind(recipe) === "salad";
+  }
+
+  function isLooseSoupRecipe(recipe: Recipe) {
+    return isRealDish(recipe) && getRecipeKind(recipe) === "soup";
+  }
+
+  function isLooseMainRecipe(recipe: Recipe) {
+    return isRealDish(recipe) && getRecipeKind(recipe) === "main";
+  }
+
+  function isLooseSideRecipe(recipe: Recipe) {
+    return isRealDish(recipe) && getRecipeKind(recipe) === "side";
+  }
+
+  function isLooseBakingRecipe(recipe: Recipe) {
+    return isRealDish(recipe) && getRecipeKind(recipe) === "baking";
   }
 
   function isKidsRecipe(recipe: Recipe) {
+    if (!isRealDish(recipe)) return false;
+
     const text = getRecipeSearchText(recipe);
 
     if (
@@ -815,7 +1081,10 @@ export default function AiPage() {
       "детское питание",
     ]);
   }
+
   function isHolidayRecipe(recipe: Recipe) {
+    if (!isRealDish(recipe)) return false;
+
     const text = getRecipeSearchText(recipe);
 
     const holidayTag = hasAnyWord(text, [
@@ -836,22 +1105,17 @@ export default function AiPage() {
       "праздничное блюдо",
     ]);
 
-    const badSimpleText = hasAnyWord(text, [
-      "сыр домашний",
-      "сыр сулугуни",
-      "брынза",
-      "творог домашний",
-      "молочные продукты домашние",
-      "тесто домашнее",
-      "соус",
-      "маринад",
-      "заготовки",
-    ]);
-
-    const ingredientCount = recipe.rawIngredients?.length || recipe.ingredientIds?.length || 0;
+    const kind = getRecipeKind(recipe);
+    const ingredientCount =
+      recipe.rawIngredients?.length || recipe.ingredientIds?.length || 0;
     const stepsCount = recipe.steps?.length || 0;
 
-    return holidayTag && !badSimpleText && ingredientCount >= 5 && stepsCount >= 3;
+    return (
+      holidayTag &&
+      ["salad", "soup", "main", "dessert"].includes(kind) &&
+      ingredientCount >= 4 &&
+      stepsCount >= 2
+    );
   }
 
   function seededNumber(value: string) {
@@ -870,29 +1134,38 @@ export default function AiPage() {
     take = 20,
     sectionKey = "default",
   ) {
-    const filteredResults = allMatchedResults.filter((result) =>
-      predicate(result.recipe, result),
-    );
+    const filteredResults = allMatchedResults.filter((result) => {
+      if (!isRealDish(result.recipe)) return false;
+      if (result.total < 2) return false;
+      if (result.score < 25) return false;
+      return predicate(result.recipe, result);
+    });
 
-    const goodResults = filteredResults.filter((result) => result.score >= 40);
-    const pool = goodResults.length >= take ? goodResults : filteredResults;
+    const strongResults = filteredResults.filter(
+      (result) => result.score >= 70,
+    );
+    const goodResults = filteredResults.filter((result) => result.score >= 45);
+    const pool =
+      strongResults.length >= 3
+        ? strongResults
+        : goodResults.length >= 3
+          ? goodResults
+          : filteredResults;
 
     return [...pool]
       .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        if (a.missingIds.length !== b.missingIds.length)
+          return a.missingIds.length - b.missingIds.length;
         const aRandom = seededNumber(
           `${recipeRefreshSeed}_${sectionKey}_${a.recipe.id}_${a.recipe.title}`,
         );
         const bRandom = seededNumber(
           `${recipeRefreshSeed}_${sectionKey}_${b.recipe.id}_${b.recipe.title}`,
         );
-
         return bRandom - aRandom;
       })
-      .slice(0, take)
-      .sort((a, b) => {
-        if (b.score !== a.score) return b.score - a.score;
-        return a.recipe.title.localeCompare(b.recipe.title, "ru");
-      });
+      .slice(0, take);
   }
 
   useEffect(() => {
@@ -1151,15 +1424,22 @@ export default function AiPage() {
 
     const timer = setTimeout(() => {
       const items = suggestedRecipes
-        .filter((recipe) => {
-          const recipeText = getRecipeSearchText(recipe);
-          return recipeText.includes(searchText);
+        .map((recipe) => ({
+          recipe,
+          searchScore: getSearchScore(recipe, searchText),
+        }))
+        .filter((item) => item.searchScore > 0)
+        .sort((a, b) => {
+          if (b.searchScore !== a.searchScore)
+            return b.searchScore - a.searchScore;
+          return a.recipe.title.localeCompare(b.recipe.title, "ru");
         })
-        .slice(0, 7);
+        .slice(0, 30)
+        .map((item) => item.recipe);
 
       setSearchRecipes(items);
       setLoadingSearch(false);
-    }, 250);
+    }, 150);
 
     return () => clearTimeout(timer);
   }, [search, suggestedRecipes]);
@@ -1188,6 +1468,14 @@ export default function AiPage() {
   const fridgeIngredientSet = useMemo(() => {
     return new Set(fridgeIngredientIds);
   }, [fridgeIngredientIds]);
+
+  const fridgeSnapshotKey = useMemo(() => {
+    return fridgeIngredientIds.slice().sort().join("|");
+  }, [fridgeIngredientIds]);
+
+  const recipeCacheKey = useMemo(() => {
+    return `familyshop_ai_matched_recipes_${familyId || "guest"}`;
+  }, [familyId]);
 
   function buildMatch(recipe: Recipe): MatchResult {
     const fridgeSet = fridgeIngredientSet;
@@ -1221,117 +1509,321 @@ export default function AiPage() {
   }
 
   useEffect(() => {
-    if (!suggestedRecipes.length) {
-      setMatchedResultsState([]);
-      setMatchProgress(0);
-      setMatchingRecipes(false);
+    if (
+      loadingProducts ||
+      loadingFridge ||
+      loadingSuggested ||
+      !suggestedRecipes.length
+    ) {
       return;
     }
 
-    let cancelled = false;
+    try {
+      const saved = window.localStorage.getItem(recipeCacheKey);
 
-    async function processRecipesInChunks() {
-      setMatchingRecipes(true);
-      setMatchProgress(0);
-
-      const uniqueByTitle = new Map<string, MatchResult>();
-      const chunkSize = 40;
-
-      for (let index = 0; index < suggestedRecipes.length; index += chunkSize) {
-        if (cancelled) return;
-
-        const chunk = suggestedRecipes.slice(index, index + chunkSize);
-
-        chunk
-          .map(buildMatch)
-          .filter((result) => result.total > 0 && result.score > 0)
-          .forEach((result) => {
-            const titleKey = normalizeText(result.recipe.title);
-
-            if (!uniqueByTitle.has(titleKey)) {
-              uniqueByTitle.set(titleKey, result);
-            }
-          });
-
-        if (!cancelled) {
-          setMatchProgress(
-            Math.round(
-              ((index + chunk.length) / suggestedRecipes.length) * 100,
-            ),
-          );
-        }
-
-        await new Promise((resolve) => {
-          if (typeof window !== "undefined" && "requestAnimationFrame" in window) {
-            window.requestAnimationFrame(() => resolve(null));
-            return;
-          }
-
-          setTimeout(resolve, 0);
-        });
+      if (!saved) {
+        setRecipesNeedRefresh(true);
+        setMatchingRecipes(false);
+        setMatchProgress(0);
+        return;
       }
 
-      const finalResults = Array.from(uniqueByTitle.values())
+      const parsed = JSON.parse(saved) as {
+        fridgeKey?: string;
+        recipeIds?: string[];
+      };
+
+      const recipeIds = Array.isArray(parsed.recipeIds) ? parsed.recipeIds : [];
+
+      if (recipeIds.length === 0) {
+        setRecipesNeedRefresh(true);
+        setMatchingRecipes(false);
+        setMatchProgress(0);
+        return;
+      }
+
+      const recipeOrder = new Map<string, number>();
+      recipeIds.forEach((id, index) => recipeOrder.set(id, index));
+
+      const cachedResults = suggestedRecipes
+        .filter((recipe) => recipeOrder.has(recipe.id))
+        .map(buildMatch)
+        .filter((result) => result.total > 0)
         .sort((a, b) => {
-          if (b.score !== a.score) return b.score - a.score;
-          if (b.haveIds.length !== a.haveIds.length) {
-            return b.haveIds.length - a.haveIds.length;
-          }
-          if (a.missingIds.length !== b.missingIds.length) {
-            return a.missingIds.length - b.missingIds.length;
-          }
-          return a.recipe.title.localeCompare(b.recipe.title, "ru");
-        })
-        .slice(0, 800);
+          const aIndex = recipeOrder.get(a.recipe.id) ?? 999999;
+          const bIndex = recipeOrder.get(b.recipe.id) ?? 999999;
+          return aIndex - bIndex;
+        });
 
-      if (!cancelled) {
-        setMatchedResultsState(finalResults);
-        setMatchProgress(100);
+      setMatchedResultsState(cachedResults);
+      setRecipesNeedRefresh(parsed.fridgeKey !== fridgeSnapshotKey);
+      setMatchingRecipes(false);
+      setMatchProgress(0);
+    } catch (error) {
+      console.warn("AI cached recipes load warning", error);
+      setRecipesNeedRefresh(true);
+      setMatchingRecipes(false);
+      setMatchProgress(0);
+    }
+  }, [
+    loadingProducts,
+    loadingFridge,
+    loadingSuggested,
+    suggestedRecipes,
+    recipeCacheKey,
+    fridgeSnapshotKey,
+  ]);
 
-        window.setTimeout(() => {
-          if (!cancelled) {
-            setMatchingRecipes(false);
-          }
-        }, 150);
-      }
+  async function runRecipeMatching() {
+    if (loadingProducts || loadingFridge || loadingSuggested || !suggestedRecipes.length) {
+      setMessage("⚠️ База ещё загружается. Попробуй через секунду.");
+      return;
     }
 
-    processRecipesInChunks();
+    setMatchingRecipes(true);
+    setRecipesNeedRefresh(false);
+    setMatchProgress(1);
+    setMessage("🤖 Обновляю подбор рецептов...");
 
-    return () => {
-      cancelled = true;
-    };
-  }, [suggestedRecipes, fridgeIngredientIds, fridgeIngredientSet]);
+    await new Promise((resolve) => {
+      if (typeof window !== "undefined" && "requestAnimationFrame" in window) {
+        window.requestAnimationFrame(() => resolve(null));
+        return;
+      }
+
+      setTimeout(resolve, 0);
+    });
+
+    const uniqueByTitle = new Map<string, MatchResult>();
+    const chunkSize = 40;
+
+    for (let index = 0; index < suggestedRecipes.length; index += chunkSize) {
+      const chunk = suggestedRecipes.slice(index, index + chunkSize);
+
+      chunk
+        .map(buildMatch)
+        .filter((result) => result.total > 0 && result.score > 0)
+        .forEach((result) => {
+          const titleKey = normalizeText(result.recipe.title);
+
+          if (!uniqueByTitle.has(titleKey)) {
+            uniqueByTitle.set(titleKey, result);
+          }
+        });
+
+      setMatchProgress(
+        Math.round(((index + chunk.length) / suggestedRecipes.length) * 100),
+      );
+
+      await new Promise((resolve) => {
+        if (typeof window !== "undefined" && "requestAnimationFrame" in window) {
+          window.requestAnimationFrame(() => resolve(null));
+          return;
+        }
+
+        setTimeout(resolve, 0);
+      });
+    }
+
+    const finalResults = Array.from(uniqueByTitle.values())
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        if (b.haveIds.length !== a.haveIds.length) {
+          return b.haveIds.length - a.haveIds.length;
+        }
+        if (a.missingIds.length !== b.missingIds.length) {
+          return a.missingIds.length - b.missingIds.length;
+        }
+        return a.recipe.title.localeCompare(b.recipe.title, "ru");
+      })
+      .slice(0, 800);
+
+    setMatchedResultsState(finalResults);
+    setMatchProgress(100);
+    setRecipesNeedRefresh(false);
+
+    try {
+      window.localStorage.setItem(
+        recipeCacheKey,
+        JSON.stringify({
+          fridgeKey: fridgeSnapshotKey,
+          recipeIds: finalResults.map((result) => result.recipe.id),
+          updatedAt: Date.now(),
+        }),
+      );
+    } catch (error) {
+      console.warn("AI cached recipes save warning", error);
+    }
+
+    window.setTimeout(() => {
+      setMatchingRecipes(false);
+      setMessage("✅ Рецепты обновлены");
+    }, 150);
+  }
 
   const allMatchedResults = matchedResultsState;
 
   const suggestedResults = useMemo(() => {
-    const perfectResults = allMatchedResults
+    const cleanResults = allMatchedResults.filter((result) =>
+      isRealDish(result.recipe),
+    );
+
+    const perfectResults = cleanResults
       .filter((result) => result.score === 100)
       .slice(0, 7);
 
-    const almostResults = allMatchedResults
+    const almostResults = cleanResults
       .filter((result) => result.score < 100)
       .slice(0, 7 - perfectResults.length);
 
     return [...perfectResults, ...almostResults];
   }, [allMatchedResults]);
 
+  const quickBreakfastResults = useMemo(() => {
+    const strictResults = sectionResults(
+      (recipe) => isQuickBreakfastRecipe(recipe),
+      7,
+      "quick_breakfast",
+    );
+
+    return strictResults.length > 0
+      ? strictResults
+      : sectionResults(
+          (recipe) => isLooseBreakfastRecipe(recipe),
+          7,
+          "quick_breakfast_loose",
+        );
+  }, [allMatchedResults, recipeRefreshSeed]);
+
   const quickSaladResults = useMemo(() => {
-    return sectionResults((recipe) => isQuickSaladRecipe(recipe), 7, "quick_salads");
+    const strictResults = sectionResults(
+      (recipe) => isQuickSaladRecipe(recipe),
+      7,
+      "quick_salads",
+    );
+
+    return strictResults.length > 0
+      ? strictResults
+      : sectionResults(
+          (recipe) => isLooseSaladRecipe(recipe),
+          7,
+          "quick_salads_loose",
+        );
   }, [allMatchedResults, recipeRefreshSeed]);
 
   const quickSoupResults = useMemo(() => {
-    return sectionResults((recipe) => isQuickSoupRecipe(recipe), 7, "quick_soups");
+    const strictResults = sectionResults(
+      (recipe) => isQuickSoupRecipe(recipe),
+      7,
+      "quick_soups",
+    );
+
+    return strictResults.length > 0
+      ? strictResults
+      : sectionResults(
+          (recipe) => isLooseSoupRecipe(recipe),
+          7,
+          "quick_soups_loose",
+        );
   }, [allMatchedResults, recipeRefreshSeed]);
 
   const quickMainResults = useMemo(() => {
-    return sectionResults((recipe) => isQuickMainRecipe(recipe), 7, "quick_mains");
+    const strictResults = sectionResults(
+      (recipe) => isQuickMainRecipe(recipe),
+      7,
+      "quick_mains",
+    );
+
+    return strictResults.length > 0
+      ? strictResults
+      : sectionResults(
+          (recipe) => isLooseMainRecipe(recipe),
+          7,
+          "quick_mains_loose",
+        );
+  }, [allMatchedResults, recipeRefreshSeed]);
+
+  const quickSideResults = useMemo(() => {
+    const strictResults = sectionResults(
+      (recipe) => isQuickSideRecipe(recipe),
+      7,
+      "quick_sides",
+    );
+
+    return strictResults.length > 0
+      ? strictResults
+      : sectionResults(
+          (recipe) => isLooseSideRecipe(recipe),
+          7,
+          "quick_sides_loose",
+        );
+  }, [allMatchedResults, recipeRefreshSeed]);
+
+  const quickBakingResults = useMemo(() => {
+    const strictResults = sectionResults(
+      (recipe) => isQuickBakingRecipe(recipe),
+      7,
+      "quick_baking",
+    );
+
+    return strictResults.length > 0
+      ? strictResults
+      : sectionResults(
+          (recipe) => isLooseBakingRecipe(recipe),
+          7,
+          "quick_baking_loose",
+        );
   }, [allMatchedResults, recipeRefreshSeed]);
 
   const quickResults = useMemo(() => {
-    return [...quickSaladResults, ...quickSoupResults, ...quickMainResults];
-  }, [quickSaladResults, quickSoupResults, quickMainResults]);
+    const allowedKinds = new Set(["breakfast", "salad", "soup", "main"]);
+
+    return allMatchedResults
+      .filter((result) => {
+        const kind = getQuickRecipeKind(result.recipe);
+        return (
+          result.score >= 35 &&
+          allowedKinds.has(kind) &&
+          isQuickRecipe(result.recipe)
+        );
+      })
+      .sort((a, b) => {
+        const aKind = getQuickRecipeKind(a.recipe);
+        const bKind = getQuickRecipeKind(b.recipe);
+        const aTime = a.recipe.cookingTime || 999;
+        const bTime = b.recipe.cookingTime || 999;
+        const aBonus =
+          aKind === "main"
+            ? 10
+            : aKind === "soup"
+              ? 7
+              : aKind === "breakfast"
+                ? 5
+                : 4;
+        const bBonus =
+          bKind === "main"
+            ? 10
+            : bKind === "soup"
+              ? 7
+              : bKind === "breakfast"
+                ? 5
+                : 4;
+        const aRank =
+          a.score * 10 +
+          aBonus -
+          Math.min(aTime, 120) / 10 +
+          Math.min(a.haveIds.length, 8);
+        const bRank =
+          b.score * 10 +
+          bBonus -
+          Math.min(bTime, 120) / 10 +
+          Math.min(b.haveIds.length, 8);
+
+        if (bRank !== aRank) return bRank - aRank;
+        return a.recipe.title.localeCompare(b.recipe.title, "ru");
+      })
+      .slice(0, 15);
+  }, [allMatchedResults, recipeRefreshSeed]);
 
   const kidsResults = useMemo(() => {
     return sectionResults((recipe) => isKidsRecipe(recipe), 7, "kids");
@@ -1342,45 +1834,15 @@ export default function AiPage() {
   }, [allMatchedResults, recipeRefreshSeed]);
 
   function recipeKind(result: MatchResult) {
-    const text = getRecipeSearchText(result.recipe);
-
-    if (/(салат|винегрет|закуска|овощн)/.test(text)) return "salad";
-    if (
-      /(суп|борщ|щи|уха|рассольник|солянка|окрошка|шурпа|бульон|крем суп)/.test(
-        text,
-      )
-    )
-      return "soup";
-    if (/(чай|кофе|компот|морс|кисель|напиток|сок|какао)/.test(text))
-      return "drink";
-    if (
-      /(десерт|торт|пирог|печенье|кекс|булоч|пирожн|сырник|запеканка|блины|оладьи)/.test(
-        text,
-      )
-    ) {
-      if (
-        /(сырник|каша|омлет|яичниц|блины|оладьи|бутерброд|тост|завтрак)/.test(
-          text,
-        )
-      ) {
-        return "breakfast";
-      }
-      return "dessert";
-    }
-    if (
-      /(завтрак|омлет|яичниц|каша|бутерброд|тост|гренк|сырник|блины|оладьи)/.test(
-        text,
-      )
-    ) {
-      return "breakfast";
-    }
-
-    return "main";
+    return getRecipeKind(result.recipe);
   }
 
   const mealPlans = useMemo(() => {
     const usableResults = allMatchedResults.filter(
-      (result) => result.score >= 70,
+      (result) =>
+        result.score >= 60 &&
+        isRealDish(result.recipe) &&
+        recipeKind(result) !== "other",
     );
 
     function best(kind: string, excludeIds: string[] = []) {
@@ -1501,7 +1963,7 @@ export default function AiPage() {
   }, [mealPlans]);
 
   const searchResults = useMemo(() => {
-    return searchRecipes.map(buildMatch).slice(0, 7);
+    return searchRecipes.map(buildMatch).slice(0, 20);
   }, [searchRecipes, fridgeIngredientIds]);
 
   const favoriteResults = useMemo(() => {
@@ -1550,21 +2012,33 @@ export default function AiPage() {
   async function toggleFavoriteRecipe(recipe: Recipe) {
     if (!familyId) return;
 
-    if (isFavoriteRecipe(recipe.id)) {
-      await deleteDoc(
-        doc(db, "families", familyId, "favoriteRecipes", recipe.id),
-      );
-      return;
-    }
+    const favoriteDocId = makeFavoriteRecipeDocId(recipe);
 
-    await setDoc(
-      doc(db, "families", familyId, "favoriteRecipes", recipe.id),
-      {
-        ...recipe,
-        createdAt: serverTimestamp(),
-      },
-      { merge: true },
-    );
+    try {
+      if (isFavoriteRecipe(recipe)) {
+        await deleteDoc(
+          doc(db, "families", familyId, "favoriteRecipes", favoriteDocId),
+        );
+        setMessage("☆ Убрано из избранного");
+        return;
+      }
+
+      await setDoc(
+        doc(db, "families", familyId, "favoriteRecipes", favoriteDocId),
+        {
+          ...recipe,
+          id: recipe.id,
+          favoriteDocId,
+          createdAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      setMessage("⭐ Добавлено в избранное");
+    } catch (error) {
+      console.warn("AI favorite recipe warning", error);
+      setMessage("⚠️ Не получилось изменить избранное.");
+    }
   }
 
   async function startCooking(result: MatchResult) {
@@ -1630,18 +2104,22 @@ export default function AiPage() {
           shoppingDocId,
         );
 
-        batch.set(shoppingRef, {
-          name,
-          productName: ingredient.name,
-          icon: ingredient.icon,
-          productId: ingredient.productId || ingredientId,
-          ingredientId: ingredient.productId || ingredientId,
-          category: ingredient.category || "Другое",
-          source: "AI Cook",
-          recipeId: result.recipe.id,
-          recipeTitle: result.recipe.title,
-          createdAt: serverTimestamp(),
-        }, { merge: true });
+        batch.set(
+          shoppingRef,
+          {
+            name,
+            productName: ingredient.name,
+            icon: ingredient.icon,
+            productId: ingredient.productId || ingredientId,
+            ingredientId: ingredient.productId || ingredientId,
+            category: ingredient.category || "Другое",
+            source: "AI Cook",
+            recipeId: result.recipe.id,
+            recipeTitle: result.recipe.title,
+            createdAt: serverTimestamp(),
+          },
+          { merge: true },
+        );
       }
 
       await batch.commit();
@@ -1807,18 +2285,22 @@ export default function AiPage() {
             shoppingDocId,
           );
 
-          batch.set(shoppingRef, {
-            name,
-            productName: ingredient.name,
-            icon: ingredient.icon,
-            productId: ingredient.productId || ingredientId,
-            ingredientId: ingredient.productId || ingredientId,
-            category: ingredient.category || "Другое",
-            source: "AI Cook meal plan",
-            mealPlanId: plan.id,
-            mealPlanTitle: plan.title,
-            createdAt: serverTimestamp(),
-          }, { merge: true });
+          batch.set(
+            shoppingRef,
+            {
+              name,
+              productName: ingredient.name,
+              icon: ingredient.icon,
+              productId: ingredient.productId || ingredientId,
+              ingredientId: ingredient.productId || ingredientId,
+              category: ingredient.category || "Другое",
+              source: "AI Cook meal plan",
+              mealPlanId: plan.id,
+              mealPlanTitle: plan.title,
+              createdAt: serverTimestamp(),
+            },
+            { merge: true },
+          );
         }
       }
 
@@ -1981,7 +2463,11 @@ export default function AiPage() {
                         ? "☕"
                         : recipeKind(item) === "breakfast"
                           ? "🍳"
-                          : "🍽"}{" "}
+                          : recipeKind(item) === "side"
+                            ? "🍚"
+                            : recipeKind(item) === "baking"
+                              ? "🥟"
+                              : "🍽"}{" "}
                   {item.recipe.title}
                 </p>
                 <p className="mt-1 text-sm text-slate-500">
@@ -2063,7 +2549,7 @@ export default function AiPage() {
 
   function RecipeCard({ result }: { result: MatchResult }) {
     const recipe = result.recipe;
-    const favorite = isFavoriteRecipe(recipe.id);
+    const favorite = isFavoriteRecipe(recipe);
     const recipeTime = getRecipeTime(recipe);
     const statusText =
       result.missingIds.length > 0
@@ -2135,7 +2621,7 @@ export default function AiPage() {
             event.stopPropagation();
             toggleFavoriteRecipe(recipe);
           }}
-          className="absolute right-3 top-3 rounded-full bg-white/90 px-2 py-1 text-lg shadow-sm"
+          className="absolute right-3 top-3 z-10 rounded-full bg-white/90 px-2 py-1 text-lg shadow-sm"
         >
           {favorite ? "⭐" : "☆"}
         </button>
@@ -2163,12 +2649,13 @@ export default function AiPage() {
         <button
           type="button"
           onClick={refreshRecipesManually}
-          className="mb-4 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm active:scale-[0.99]"
+          disabled={matchingRecipes || loadingSuggested}
+          className="mb-4 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm disabled:opacity-50 active:scale-[0.99]"
         >
-          🔄 Обновить рецепты
+          {matchingRecipes ? "⏳ Обновляю..." : "🔄 Обновить рецепты"}
         </button>
 
-        {loadingSuggested ? (
+        {matchingRecipes ? (
           <p className="text-sm text-slate-500">Подбираю рецепты...</p>
         ) : items.length === 0 ? (
           <p className="text-sm text-slate-500">{emptyText}</p>
@@ -2225,6 +2712,8 @@ export default function AiPage() {
     );
   }, [cookingRecipes]);
 
+  const recipeCountText = matchingRecipes ? "…" : null;
+
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
       <div className="mx-auto min-h-screen max-w-md bg-slate-50 pb-24">
@@ -2242,20 +2731,17 @@ export default function AiPage() {
             </motion.div>
           )}
         </AnimatePresence>
-        <motion.header
-          initial={{ opacity: 0, y: -12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.25 }}
-          className="px-5 pt-8 pb-4"
-        >
-          <p className="text-sm text-slate-500">FamilyShop</p>
-          <h1 className="text-3xl font-bold">AI Cook 🤖</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Рецепты по холодильнику, времени и семейным сценариям
-          </p>
 
+        <AnimatePresence>
           {matchingRecipes && (
-            <div className="mt-3 rounded-2xl bg-blue-50 px-4 py-3">
+            <motion.div
+              key="ai-matching-toast"
+              initial={{ opacity: 0, y: -16, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -16, scale: 0.98 }}
+              transition={{ duration: 0.18 }}
+              className="pointer-events-none fixed left-1/2 top-4 z-[9998] w-[88%] max-w-md -translate-x-1/2 rounded-2xl bg-blue-50 px-4 py-3 shadow-xl ring-1 ring-blue-100"
+            >
               <div className="text-sm font-medium text-blue-700">
                 🤖 Сопоставляю холодильник и рецепты...
               </div>
@@ -2270,8 +2756,20 @@ export default function AiPage() {
               <div className="mt-1 text-xs text-blue-600">
                 {matchProgress}% обработано
               </div>
-            </div>
+            </motion.div>
           )}
+        </AnimatePresence>
+        <motion.header
+          initial={{ opacity: 0, y: -12 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.25 }}
+          className="px-5 pt-8 pb-4"
+        >
+          <p className="text-sm text-slate-500">FamilyShop</p>
+          <h1 className="text-3xl font-bold">AI Cook 🤖</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            Рецепты по холодильнику, времени и семейным сценариям
+          </p>
         </motion.header>
 
         <section className="space-y-5 px-5">
@@ -2284,6 +2782,12 @@ export default function AiPage() {
             placeholder="🔍 Найти рецепт от 2 букв"
             className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base outline-none focus:border-blue-400"
           />
+
+          {!isSearching && recipesNeedRefresh && !matchingRecipes && !loadingSuggested && (
+            <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800 ring-1 ring-amber-100">
+              🔄 Подбор рецептов не обновлён. Нажми “Обновить рецепты”, когда нужно пересчитать по холодильнику.
+            </div>
+          )}
 
           {isSearching && (
             <ToggleBlock
@@ -2403,11 +2907,20 @@ export default function AiPage() {
           {!isSearching && (
             <ToggleBlock
               title="🍽 Меню на сегодня"
-              count={mealPlans.length}
+              count={recipeCountText || mealPlans.length}
               open={showMealPlan}
               onToggle={() => setShowMealPlan((prev) => !prev)}
             >
-              {loadingSuggested ? (
+              <button
+                type="button"
+                onClick={refreshRecipesManually}
+                disabled={matchingRecipes || loadingSuggested}
+                className="mb-4 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm disabled:opacity-50 active:scale-[0.99]"
+              >
+                {matchingRecipes ? "⏳ Обновляю..." : "🔄 Обновить рецепты"}
+              </button>
+
+              {matchingRecipes ? (
                 <p className="text-sm text-slate-500">Собираю меню...</p>
               ) : mealPlans.length === 0 ? (
                 <p className="text-sm text-slate-500">
@@ -2428,108 +2941,47 @@ export default function AiPage() {
             <>
               <ToggleBlock
                 title="⚡ Быстро приготовить"
-                count={quickResults.length}
+                count={recipeCountText || quickResults.length}
                 open={showQuick}
                 onToggle={() => setShowQuick((prev) => !prev)}
               >
                 <button
                   type="button"
                   onClick={refreshRecipesManually}
-                  className="mb-4 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm active:scale-[0.99]"
+                  disabled={matchingRecipes || loadingSuggested}
+                  className="mb-4 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm disabled:opacity-50 active:scale-[0.99]"
                 >
-                  🔄 Обновить рецепты
+                  {matchingRecipes ? "⏳ Обновляю..." : "🔄 Обновить рецепты"}
                 </button>
 
-                {loadingSuggested ? (
+                {matchingRecipes ? (
                   <p className="text-sm text-slate-500">
                     Подбираю быстрые рецепты...
                   </p>
                 ) : quickResults.length === 0 ? (
                   <p className="text-sm text-slate-500">
-                    Пока нет быстрых салатов, первых или вторых блюд с указанным временем.
+                    Пока нет быстрых рецептов по текущему холодильнику.
                   </p>
                 ) : (
                   <div className="space-y-3">
-                    <ToggleBlock
-                      title="🥗 Салаты до 20 минут"
-                      count={quickSaladResults.length}
-                      open={showQuickSalads}
-                      onToggle={() => setShowQuickSalads((prev) => !prev)}
-                    >
-                      {quickSaladResults.length === 0 ? (
-                        <p className="text-sm text-slate-500">
-                          Пока нет быстрых салатов.
-                        </p>
-                      ) : (
-                        <div className="space-y-3">
-                          {quickSaladResults.map((result) => (
-                            <RecipeCard key={result.recipe.id} result={result} />
-                          ))}
-                        </div>
-                      )}
-                    </ToggleBlock>
-
-                    <ToggleBlock
-                      title="🍲 Первые блюда до 45 минут"
-                      count={quickSoupResults.length}
-                      open={showQuickSoups}
-                      onToggle={() => setShowQuickSoups((prev) => !prev)}
-                    >
-                      {quickSoupResults.length === 0 ? (
-                        <p className="text-sm text-slate-500">
-                          Пока нет первых блюд до 45 минут.
-                        </p>
-                      ) : (
-                        <div className="space-y-3">
-                          {quickSoupResults.map((result) => (
-                            <RecipeCard key={result.recipe.id} result={result} />
-                          ))}
-                        </div>
-                      )}
-                    </ToggleBlock>
-
-                    <ToggleBlock
-                      title="🍖 Вторые блюда до 30 минут"
-                      count={quickMainResults.length}
-                      open={showQuickMains}
-                      onToggle={() => setShowQuickMains((prev) => !prev)}
-                    >
-                      {quickMainResults.length === 0 ? (
-                        <p className="text-sm text-slate-500">
-                          Пока нет быстрых вторых блюд.
-                        </p>
-                      ) : (
-                        <div className="space-y-3">
-                          {quickMainResults.map((result) => (
-                            <RecipeCard key={result.recipe.id} result={result} />
-                          ))}
-                        </div>
-                      )}
-                    </ToggleBlock>
+                    {quickResults.map((result) => (
+                      <RecipeCard key={result.recipe.id} result={result} />
+                    ))}
                   </div>
                 )}
               </ToggleBlock>
 
               <RecipeListBlock
                 title="👶 Детское меню"
-                count={kidsResults.length}
+                count={recipeCountText || kidsResults.length}
                 open={showKids}
                 onToggle={() => setShowKids((prev) => !prev)}
                 items={kidsResults}
                 emptyText="Пока не нашёл рецепты с пометкой детское по текущему холодильнику."
               />
 
-              <RecipeListBlock
-                title="🎉 Праздничное"
-                count={holidayResults.length}
-                open={showHoliday}
-                onToggle={() => setShowHoliday((prev) => !prev)}
-                items={holidayResults}
-                emptyText="Пока нет праздничных рецептов по текущему холодильнику."
-              />
-
               <ToggleBlock
-                title="⭐ Избранные рецепты"
+                title="⭐ Избранные"
                 count={favoriteResults.length}
                 open={showFavorites}
                 onToggle={() => setShowFavorites((prev) => !prev)}
@@ -2537,9 +2989,10 @@ export default function AiPage() {
                 <button
                   type="button"
                   onClick={refreshRecipesManually}
-                  className="mb-4 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm active:scale-[0.99]"
+                  disabled={matchingRecipes || loadingSuggested}
+                  className="mb-4 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm disabled:opacity-50 active:scale-[0.99]"
                 >
-                  🔄 Обновить рецепты
+                  {matchingRecipes ? "⏳ Обновляю..." : "🔄 Обновить рецепты"}
                 </button>
 
                 {loadingFavorites ? (
@@ -2624,13 +3077,24 @@ export default function AiPage() {
                     </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => startCooking(selectedRecipe)}
-                    className="mb-4 w-full rounded-2xl bg-blue-500 px-4 py-3 font-medium text-white"
-                  >
-                    👨‍🍳 Будем готовить
-                  </button>
+                  <div className="mb-4 grid grid-cols-[1fr_auto] gap-2">
+                    <button
+                      type="button"
+                      onClick={() => startCooking(selectedRecipe)}
+                      className="rounded-2xl bg-blue-500 px-4 py-3 font-medium text-white"
+                    >
+                      👨‍🍳 Будем готовить
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => toggleFavoriteRecipe(selectedRecipe.recipe)}
+                      className="rounded-2xl bg-slate-100 px-4 py-3 text-xl shadow-sm"
+                      title="Добавить в избранное"
+                    >
+                      {isFavoriteRecipe(selectedRecipe.recipe.id) ? "⭐" : "☆"}
+                    </button>
+                  </div>
 
                   {selectedRecipe.recipe.description && (
                     <p className="mb-5 text-sm leading-6 text-slate-700">
