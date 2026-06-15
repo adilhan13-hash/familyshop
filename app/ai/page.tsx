@@ -50,6 +50,7 @@ type Recipe = {
   cookingTime?: number;
   cookingTimeText?: string;
   time?: string;
+  tags?: string[];
   description?: string;
   ingredientIds?: string[];
   optionalIngredientIds?: string[];
@@ -384,6 +385,10 @@ export default function AiPage() {
   const [showCooking, setShowCooking] = useState(true);
   const [showSuggested, setShowSuggested] = useState(true);
   const [showSearch, setShowSearch] = useState(true);
+  const [showQuick, setShowQuick] = useState(true);
+  const [showKids, setShowKids] = useState(true);
+  const [showHomeOnly, setShowHomeOnly] = useState(true);
+  const [showHoliday, setShowHoliday] = useState(false);
   const [showFavorites, setShowFavorites] = useState(false);
   const [showFridge, setShowFridge] = useState(false);
 
@@ -602,6 +607,7 @@ export default function AiPage() {
                 cookingTime: recipe.cookingTime,
                 cookingTimeText: recipe.cookingTimeText,
                 time: recipe.time,
+                tags: recipe.tags || recipe.labels || recipe.keywords || [],
                 description: recipe.description,
                 ingredientIds: recipe.ingredientIds || [],
                 optionalIngredientIds: recipe.optionalIngredientIds || [],
@@ -650,6 +656,7 @@ export default function AiPage() {
             cookingTime: data.cookingTime,
             cookingTimeText: data.cookingTimeText,
             time: data.time,
+            tags: data.tags || [],
             description: data.description,
             ingredientIds: data.ingredientIds || [],
             optionalIngredientIds: data.optionalIngredientIds || [],
@@ -717,16 +724,33 @@ export default function AiPage() {
           const title = normalizeText(recipe.title);
           const searchTitle = normalizeText(recipe.searchTitle || recipe.title);
 
-          return title.includes(searchText) || searchTitle.includes(searchText);
+          const recipeText = normalizeText(
+            `${recipe.category || ""} ${(recipe.tags || []).join(" ")}`,
+          );
+          const ingredientText = (recipe.ingredientIds || [])
+            .slice(0, 40)
+            .map((id) => {
+              const ingredient = getIngredientInfo(id);
+              return `${id} ${ingredient.name}`;
+            })
+            .join(" ");
+          const normalizedIngredientText = normalizeText(ingredientText);
+
+          return (
+            title.includes(searchText) ||
+            searchTitle.includes(searchText) ||
+            recipeText.includes(searchText) ||
+            normalizedIngredientText.includes(searchText)
+          );
         })
-        .slice(0, 40);
+        .slice(0, 50);
 
       setSearchRecipes(items);
       setLoadingSearch(false);
     }, 250);
 
     return () => clearTimeout(timer);
-  }, [search, suggestedRecipes]);
+  }, [search, suggestedRecipes, productsMap]);
 
   const fridgeIngredientIds = useMemo(() => {
     const ids: string[] = [];
@@ -980,6 +1004,91 @@ export default function AiPage() {
     })[0];
   }, [mealPlans]);
 
+
+  function getRecipeText(recipe: Recipe) {
+    return normalizeText(
+      `${recipe.title} ${recipe.category || ""} ${recipe.cuisine || ""} ${
+        recipe.difficulty || ""
+      } ${(recipe.tags || []).join(" ")} ${recipe.description || ""}`,
+    );
+  }
+
+  function getRecipeMinutes(recipe: Recipe) {
+    if (typeof recipe.cookingTime === "number" && recipe.cookingTime > 0) {
+      return recipe.cookingTime;
+    }
+
+    const text = `${recipe.cookingTimeText || ""} ${recipe.time || ""}`;
+    const match = text.match(/(\d+)/);
+
+    return match ? Number(match[1]) : 0;
+  }
+
+  function sortSectionResults(items: MatchResult[]) {
+    return [...items].sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      if (a.missingIds.length !== b.missingIds.length) {
+        return a.missingIds.length - b.missingIds.length;
+      }
+      if (b.haveIds.length !== a.haveIds.length) {
+        return b.haveIds.length - a.haveIds.length;
+      }
+      return a.recipe.title.localeCompare(b.recipe.title, "ru");
+    });
+  }
+
+  const quickResults = useMemo(() => {
+    return sortSectionResults(
+      allMatchedResults.filter((result) => {
+        const minutes = getRecipeMinutes(result.recipe);
+        const text = getRecipeText(result.recipe);
+
+        return (
+          (minutes > 0 && minutes <= 25) ||
+          /(быстр|за 15|за 20|за 25|на скорую руку|прост)/.test(text)
+        );
+      }),
+    ).slice(0, 20);
+  }, [allMatchedResults]);
+
+  const kidsResults = useMemo(() => {
+    return sortSectionResults(
+      allMatchedResults.filter((result) => {
+        const text = getRecipeText(result.recipe);
+
+        const looksLikeKids =
+          /(детск|ребен|детям|каша|сырник|запеканк|омлет|блины|оладьи|творог|пюре|тефтел|котлетк|супчик|молочн)/.test(
+            text,
+          );
+
+        const notKids =
+          /(алкогол|водк|вино|коньяк|ром|ликер|пиво|остр|чили|жгуч|хрен|уксусн|маринад)/.test(
+            text,
+          );
+
+        return looksLikeKids && !notKids;
+      }),
+    ).slice(0, 20);
+  }, [allMatchedResults]);
+
+  const homeOnlyResults = useMemo(() => {
+    return sortSectionResults(
+      allMatchedResults.filter((result) => result.score === 100),
+    ).slice(0, 25);
+  }, [allMatchedResults]);
+
+  const holidayResults = useMemo(() => {
+    return sortSectionResults(
+      allMatchedResults.filter((result) => {
+        const text = getRecipeText(result.recipe);
+
+        return /(празднич|праздник|новый год|рождеств|гости|банкет|день рождения|застоль|торжеств)/.test(
+          text,
+        );
+      }),
+    ).slice(0, 20);
+  }, [allMatchedResults]);
+
   const searchResults = useMemo(() => {
     return searchRecipes.map(buildMatch);
   }, [searchRecipes, fridgeIngredientIds]);
@@ -1003,6 +1112,10 @@ export default function AiPage() {
     const cached = [
       ...suggestedResults,
       ...searchResults,
+      ...quickResults,
+      ...kidsResults,
+      ...homeOnlyResults,
+      ...holidayResults,
       ...favoriteResults,
     ].find((result) => result.recipe.id === recipeId);
 
@@ -1536,6 +1649,39 @@ export default function AiPage() {
     );
   }
 
+
+  function RecipeListBlock({
+    title,
+    count,
+    open,
+    onToggle,
+    items,
+    emptyText,
+  }: {
+    title: string;
+    count: number | string;
+    open: boolean;
+    onToggle: () => void;
+    items: MatchResult[];
+    emptyText: string;
+  }) {
+    return (
+      <ToggleBlock title={title} count={count} open={open} onToggle={onToggle}>
+        {loadingSuggested ? (
+          <p className="text-sm text-slate-500">Подбираю рецепты...</p>
+        ) : items.length === 0 ? (
+          <p className="text-sm text-slate-500">{emptyText}</p>
+        ) : (
+          <div className="space-y-3">
+            {items.map((result) => (
+              <RecipeCard key={result.recipe.id} result={result} />
+            ))}
+          </div>
+        )}
+      </ToggleBlock>
+    );
+  }
+
   const isSearching = normalizeText(search).length >= 2;
 
 
@@ -1641,31 +1787,8 @@ export default function AiPage() {
             </ToggleBlock>
           )}
 
-          {!isSearching && (
+          {!isSearching && cookingRecipes.length > 0 && (
             <ToggleBlock
-              title="🍽 Меню на сегодня"
-              count={mealPlans.length}
-              open={showMealPlan}
-              onToggle={() => setShowMealPlan((prev) => !prev)}
-            >
-              {loadingSuggested ? (
-                <p className="text-sm text-slate-500">Собираю меню...</p>
-              ) : mealPlans.length === 0 ? (
-                <p className="text-sm text-slate-500">
-                  Пока не получилось собрать завтрак, обед или ужин. Добавь
-                  больше продуктов в холодильник.
-                </p>
-              ) : (
-                <div className="space-y-4">
-                  {mealPlans.map((plan) => (
-                    <MealPlanCard key={plan.id} plan={plan} />
-                  ))}
-                </div>
-              )}
-            </ToggleBlock>
-          )}
-
-          <ToggleBlock
             title="👨‍🍳 Будем готовить"
             count={cookingRecipes.length}
             open={showCooking}
@@ -1759,9 +1882,70 @@ export default function AiPage() {
               </AnimatePresence>
             )}
           </ToggleBlock>
+          )}
+
+          {!isSearching && (
+            <ToggleBlock
+              title="🍽 Меню на сегодня"
+              count={mealPlans.length}
+              open={showMealPlan}
+              onToggle={() => setShowMealPlan((prev) => !prev)}
+            >
+              {loadingSuggested ? (
+                <p className="text-sm text-slate-500">Собираю меню...</p>
+              ) : mealPlans.length === 0 ? (
+                <p className="text-sm text-slate-500">
+                  Пока не получилось собрать завтрак, обед или ужин. Добавь
+                  больше продуктов в холодильник.
+                </p>
+              ) : (
+                <div className="space-y-4">
+                  {mealPlans.map((plan) => (
+                    <MealPlanCard key={plan.id} plan={plan} />
+                  ))}
+                </div>
+              )}
+            </ToggleBlock>
+          )}
 
           {!isSearching && (
             <>
+              <RecipeListBlock
+                title="⚡ Быстро приготовить"
+                count={quickResults.length}
+                open={showQuick}
+                onToggle={() => setShowQuick((prev) => !prev)}
+                items={quickResults}
+                emptyText="Пока нет быстрых рецептов по текущему холодильнику."
+              />
+
+              <RecipeListBlock
+                title="👶 Детское меню"
+                count={kidsResults.length}
+                open={showKids}
+                onToggle={() => setShowKids((prev) => !prev)}
+                items={kidsResults}
+                emptyText="Пока не нашёл детские блюда по текущему холодильнику."
+              />
+
+              <RecipeListBlock
+                title="🥗 Из того что есть дома"
+                count={homeOnlyResults.length}
+                open={showHomeOnly}
+                onToggle={() => setShowHomeOnly((prev) => !prev)}
+                items={homeOnlyResults}
+                emptyText="Пока нет рецептов на 100%. Добавь больше продуктов в холодильник."
+              />
+
+              <RecipeListBlock
+                title="🎉 Праздничное"
+                count={holidayResults.length}
+                open={showHoliday}
+                onToggle={() => setShowHoliday((prev) => !prev)}
+                items={holidayResults}
+                emptyText="Пока нет праздничных рецептов по текущему холодильнику."
+              />
+
               <ToggleBlock
                 title="⭐ Избранные рецепты"
                 count={favoriteResults.length}
@@ -1783,31 +1967,6 @@ export default function AiPage() {
                 )}
               </ToggleBlock>
 
-              <ToggleBlock
-                title="🥛 Есть дома"
-                count={fridgeItems.length}
-                open={showFridge}
-                onToggle={() => setShowFridge((prev) => !prev)}
-              >
-                {loadingFridge ? (
-                  <p className="text-sm text-slate-500">Загрузка...</p>
-                ) : fridgeItems.length === 0 ? (
-                  <p className="text-sm text-slate-500">
-                    Добавь продукты в холодильник, и AI подберёт блюда.
-                  </p>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {fridgeItems.map((item) => (
-                      <span
-                        key={item.id}
-                        className="rounded-full bg-slate-100 px-3 py-1 text-sm text-slate-700"
-                      >
-                        {item.icon || "🥛"} {item.productName || item.name}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </ToggleBlock>
             </>
           )}
         </section>
