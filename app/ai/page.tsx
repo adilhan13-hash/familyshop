@@ -429,27 +429,11 @@ export default function AiPage() {
     return () => clearTimeout(timer);
   }, [message]);
 
-  useEffect(() => {
-    function refreshRecipes() {
-      setRecipeRefreshSeed(Date.now() + Math.floor(Math.random() * 1000000));
-    }
-
-    function handleVisibilityChange() {
-      if (!document.hidden) {
-        refreshRecipes();
-      }
-    }
-
-    refreshRecipes();
-
-    window.addEventListener("pageshow", refreshRecipes);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-
-    return () => {
-      window.removeEventListener("pageshow", refreshRecipes);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, []);
+  function refreshRecipesManually() {
+    setRecipeRefreshSeed(Date.now() + Math.floor(Math.random() * 1000000));
+    setMealRecipeOverrides({});
+    setMessage("🔄 Рецепты обновлены");
+  }
 
   const productsMap = useMemo(() => {
     const map: Record<string, Product> = {};
@@ -931,7 +915,7 @@ export default function AiPage() {
           setProducts(items);
         }
       } catch (error) {
-        console.error("AI products local load error", error);
+        console.warn("AI products local load warning", error);
         if (active) {
           setProducts([]);
         }
@@ -1036,7 +1020,7 @@ export default function AiPage() {
           setSuggestedRecipes(items);
         }
       } catch (error) {
-        console.error("AI recipes local load error", error);
+        console.warn("AI recipes local load warning", error);
         if (active) {
           setSuggestedRecipes([]);
         }
@@ -1151,7 +1135,7 @@ export default function AiPage() {
           const recipeText = getRecipeSearchText(recipe);
           return recipeText.includes(searchText);
         })
-        .slice(0, 40);
+        .slice(0, 7);
 
       setSearchRecipes(items);
       setLoadingSearch(false);
@@ -1242,25 +1226,25 @@ export default function AiPage() {
   const suggestedResults = useMemo(() => {
     const perfectResults = allMatchedResults
       .filter((result) => result.score === 100)
-      .slice(0, 15);
+      .slice(0, 7);
 
     const almostResults = allMatchedResults
       .filter((result) => result.score < 100)
-      .slice(0, 50 - perfectResults.length);
+      .slice(0, 7 - perfectResults.length);
 
     return [...perfectResults, ...almostResults];
   }, [allMatchedResults]);
 
   const quickSaladResults = useMemo(() => {
-    return sectionResults((recipe) => isQuickSaladRecipe(recipe), 15, "quick_salads");
+    return sectionResults((recipe) => isQuickSaladRecipe(recipe), 7, "quick_salads");
   }, [allMatchedResults, recipeRefreshSeed]);
 
   const quickSoupResults = useMemo(() => {
-    return sectionResults((recipe) => isQuickSoupRecipe(recipe), 15, "quick_soups");
+    return sectionResults((recipe) => isQuickSoupRecipe(recipe), 7, "quick_soups");
   }, [allMatchedResults, recipeRefreshSeed]);
 
   const quickMainResults = useMemo(() => {
-    return sectionResults((recipe) => isQuickMainRecipe(recipe), 15, "quick_mains");
+    return sectionResults((recipe) => isQuickMainRecipe(recipe), 7, "quick_mains");
   }, [allMatchedResults, recipeRefreshSeed]);
 
   const quickResults = useMemo(() => {
@@ -1268,11 +1252,11 @@ export default function AiPage() {
   }, [quickSaladResults, quickSoupResults, quickMainResults]);
 
   const kidsResults = useMemo(() => {
-    return sectionResults((recipe) => isKidsRecipe(recipe), 20, "kids");
+    return sectionResults((recipe) => isKidsRecipe(recipe), 7, "kids");
   }, [allMatchedResults, recipeRefreshSeed]);
 
   const holidayResults = useMemo(() => {
-    return sectionResults((recipe) => isHolidayRecipe(recipe), 20, "holiday");
+    return sectionResults((recipe) => isHolidayRecipe(recipe), 7, "holiday");
   }, [allMatchedResults, recipeRefreshSeed]);
 
   function recipeKind(result: MatchResult) {
@@ -1435,11 +1419,11 @@ export default function AiPage() {
   }, [mealPlans]);
 
   const searchResults = useMemo(() => {
-    return searchRecipes.map(buildMatch);
+    return searchRecipes.map(buildMatch).slice(0, 7);
   }, [searchRecipes, fridgeIngredientIds]);
 
   const favoriteResults = useMemo(() => {
-    return favoriteRecipes.map(buildMatch);
+    return favoriteRecipes.map(buildMatch).slice(0, 7);
   }, [favoriteRecipes, fridgeIngredientIds]);
 
   function getRecipeTime(recipe: Recipe) {
@@ -2028,6 +2012,14 @@ export default function AiPage() {
   }) {
     return (
       <ToggleBlock title={title} count={count} open={open} onToggle={onToggle}>
+        <button
+          type="button"
+          onClick={refreshRecipesManually}
+          className="mb-4 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm active:scale-[0.99]"
+        >
+          🔄 Обновить рецепты
+        </button>
+
         {loadingSuggested ? (
           <p className="text-sm text-slate-500">Подбираю рецепты...</p>
         ) : items.length === 0 ? (
@@ -2273,6 +2265,14 @@ export default function AiPage() {
                 open={showQuick}
                 onToggle={() => setShowQuick((prev) => !prev)}
               >
+                <button
+                  type="button"
+                  onClick={refreshRecipesManually}
+                  className="mb-4 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm active:scale-[0.99]"
+                >
+                  🔄 Обновить рецепты
+                </button>
+
                 {loadingSuggested ? (
                   <p className="text-sm text-slate-500">
                     Подбираю быстрые рецепты...
@@ -2367,6 +2367,14 @@ export default function AiPage() {
                 open={showFavorites}
                 onToggle={() => setShowFavorites((prev) => !prev)}
               >
+                <button
+                  type="button"
+                  onClick={refreshRecipesManually}
+                  className="mb-4 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm active:scale-[0.99]"
+                >
+                  🔄 Обновить рецепты
+                </button>
+
                 {loadingFavorites ? (
                   <p className="text-sm text-slate-500">Загрузка...</p>
                 ) : favoriteResults.length === 0 ? (
