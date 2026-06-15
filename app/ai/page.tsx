@@ -41,20 +41,41 @@ type Product = {
   mergedIds?: string[];
 };
 
+type RecipeTag = {
+  name?: string;
+  slug?: string;
+};
+
+type RawIngredient = {
+  name?: string;
+  ingredientId?: string;
+  quantity?: string;
+};
+
 type Recipe = {
   id: string;
   title: string;
   category?: string;
+  categorySlug?: string;
   cuisine?: string;
   difficulty?: string;
-  cookingTime?: number;
-  cookingTimeText?: string;
+  cookingTime?: number | null;
+  cookingTimeText?: string | null;
+  prepareTimeText?: string | null;
   time?: string;
-  tags?: string[];
   description?: string;
+  note?: string;
+  poster?: string | null;
+  video?: string | null;
+  tags?: RecipeTag[];
+  popular?: boolean;
+  familyFriendly?: boolean;
+  rawIngredients?: RawIngredient[];
   ingredientIds?: string[];
   optionalIngredientIds?: string[];
   steps?: string[];
+  stepImages?: string[];
+  source?: string;
   searchTitle?: string;
 };
 
@@ -385,11 +406,11 @@ export default function AiPage() {
   const [showCooking, setShowCooking] = useState(true);
   const [showSuggested, setShowSuggested] = useState(true);
   const [showSearch, setShowSearch] = useState(true);
+  const [showFavorites, setShowFavorites] = useState(false);
   const [showQuick, setShowQuick] = useState(true);
   const [showKids, setShowKids] = useState(true);
   const [showHomeOnly, setShowHomeOnly] = useState(true);
   const [showHoliday, setShowHoliday] = useState(false);
-  const [showFavorites, setShowFavorites] = useState(false);
   const [showFridge, setShowFridge] = useState(false);
 
   const [addedAnimation, setAddedAnimation] = useState(false);
@@ -498,6 +519,116 @@ export default function AiPage() {
     );
   }
 
+  function getRecipeTagsText(recipe: Recipe) {
+    return normalizeText(
+      (recipe.tags || [])
+        .map((tag) => `${tag.name || ""} ${tag.slug || ""}`)
+        .join(" "),
+    );
+  }
+
+  function getRecipeSearchText(recipe: Recipe) {
+    const rawIngredientsText = (recipe.rawIngredients || [])
+      .map(
+        (ingredient) =>
+          `${ingredient.name || ""} ${ingredient.ingredientId || ""} ${ingredient.quantity || ""}`,
+      )
+      .join(" ");
+
+    return normalizeText(
+      `${recipe.title} ${recipe.searchTitle || ""} ${recipe.category || ""} ${
+        recipe.categorySlug || ""
+      } ${recipe.cuisine || ""} ${recipe.difficulty || ""} ${getRecipeTagsText(
+        recipe,
+      )} ${rawIngredientsText}`,
+    );
+  }
+
+  function hasAnyWord(text: string, words: string[]) {
+    return words.some((word) => text.includes(normalizeText(word)));
+  }
+
+  function isQuickRecipe(recipe: Recipe) {
+    const text = getRecipeSearchText(recipe);
+    const time = recipe.cookingTime || 0;
+
+    return (
+      (time > 0 && time <= 25) ||
+      hasAnyWord(text, [
+        "быстро",
+        "быстрый",
+        "скорую руку",
+        "простые на каждый день",
+        "простые рецепты",
+      ])
+    );
+  }
+
+  function isKidsRecipe(recipe: Recipe) {
+    const text = getRecipeSearchText(recipe);
+
+    if (
+      hasAnyWord(text, [
+        "алкоголь",
+        "водка",
+        "вино",
+        "коньяк",
+        "ром",
+        "острый",
+        "острая",
+        "чили",
+        "хрен",
+        "горчица",
+      ])
+    ) {
+      return false;
+    }
+
+    return (
+      recipe.familyFriendly === true ||
+      hasAnyWord(text, [
+        "детские рецепты",
+        "детский",
+        "каша",
+        "омлет",
+        "сырники",
+        "запеканка",
+        "оладьи",
+        "блины",
+        "творог",
+        "молочный коктейль",
+      ])
+    );
+  }
+
+  function isHolidayRecipe(recipe: Recipe) {
+    const text = getRecipeSearchText(recipe);
+
+    return (
+      recipe.popular === true ||
+      hasAnyWord(text, [
+        "праздничный стол",
+        "праздничное",
+        "праздник",
+        "новый год",
+        "рождество",
+        "день рождения",
+        "гости",
+        "банкет",
+        "фуршет",
+      ])
+    );
+  }
+
+  function sectionResults(
+    predicate: (recipe: Recipe, result: MatchResult) => boolean,
+    take = 20,
+  ) {
+    return allMatchedResults
+      .filter((result) => predicate(result.recipe, result))
+      .slice(0, take);
+  }
+
   useEffect(() => {
     let active = true;
 
@@ -505,7 +636,9 @@ export default function AiPage() {
       try {
         setLoadingProducts(true);
 
-        const response = await fetch("/data/products_v8_ready_for_firebase.json");
+        const response = await fetch(
+          "/data/products_v8_ready_for_firebase.json",
+        );
 
         if (!response.ok) {
           throw new Error(`Products JSON load failed: ${response.status}`);
@@ -602,16 +735,30 @@ export default function AiPage() {
                 id: recipe.id || recipe.slug || `recipe_${index}`,
                 title,
                 category: recipe.category || "Рецепт",
+                categorySlug: recipe.categorySlug,
                 cuisine: recipe.cuisine,
                 difficulty: recipe.difficulty,
-                cookingTime: recipe.cookingTime,
-                cookingTimeText: recipe.cookingTimeText,
+                cookingTime: recipe.cookingTime ?? null,
+                cookingTimeText: recipe.cookingTimeText || null,
+                prepareTimeText: recipe.prepareTimeText || null,
                 time: recipe.time,
-                tags: recipe.tags || recipe.labels || recipe.keywords || [],
                 description: recipe.description,
+                note: recipe.note,
+                poster: recipe.poster || null,
+                video: recipe.video || null,
+                tags: Array.isArray(recipe.tags) ? recipe.tags : [],
+                popular: Boolean(recipe.popular),
+                familyFriendly: Boolean(recipe.familyFriendly),
+                rawIngredients: Array.isArray(recipe.rawIngredients)
+                  ? recipe.rawIngredients
+                  : [],
                 ingredientIds: recipe.ingredientIds || [],
                 optionalIngredientIds: recipe.optionalIngredientIds || [],
                 steps: recipe.steps || [],
+                stepImages: Array.isArray(recipe.stepImages)
+                  ? recipe.stepImages
+                  : [],
+                source: recipe.source,
                 searchTitle: recipe.searchTitle || normalizeText(title),
               };
             })
@@ -653,14 +800,26 @@ export default function AiPage() {
             id: data.id || document.id,
             title: data.title || "Без названия",
             category: data.category || "Рецепт",
-            cookingTime: data.cookingTime,
-            cookingTimeText: data.cookingTimeText,
+            categorySlug: data.categorySlug,
+            cookingTime: data.cookingTime ?? null,
+            cookingTimeText: data.cookingTimeText || null,
+            prepareTimeText: data.prepareTimeText || null,
             time: data.time,
-            tags: data.tags || [],
+            difficulty: data.difficulty,
             description: data.description,
+            note: data.note,
+            poster: data.poster || null,
+            tags: Array.isArray(data.tags) ? data.tags : [],
+            popular: Boolean(data.popular),
+            familyFriendly: Boolean(data.familyFriendly),
+            rawIngredients: Array.isArray(data.rawIngredients)
+              ? data.rawIngredients
+              : [],
             ingredientIds: data.ingredientIds || [],
             optionalIngredientIds: data.optionalIngredientIds || [],
             steps: data.steps || [],
+            stepImages: Array.isArray(data.stepImages) ? data.stepImages : [],
+            source: data.source,
             searchTitle: data.searchTitle,
           });
         });
@@ -721,36 +880,17 @@ export default function AiPage() {
     const timer = setTimeout(() => {
       const items = suggestedRecipes
         .filter((recipe) => {
-          const title = normalizeText(recipe.title);
-          const searchTitle = normalizeText(recipe.searchTitle || recipe.title);
-
-          const recipeText = normalizeText(
-            `${recipe.category || ""} ${(recipe.tags || []).join(" ")}`,
-          );
-          const ingredientText = (recipe.ingredientIds || [])
-            .slice(0, 40)
-            .map((id) => {
-              const ingredient = getIngredientInfo(id);
-              return `${id} ${ingredient.name}`;
-            })
-            .join(" ");
-          const normalizedIngredientText = normalizeText(ingredientText);
-
-          return (
-            title.includes(searchText) ||
-            searchTitle.includes(searchText) ||
-            recipeText.includes(searchText) ||
-            normalizedIngredientText.includes(searchText)
-          );
+          const recipeText = getRecipeSearchText(recipe);
+          return recipeText.includes(searchText);
         })
-        .slice(0, 50);
+        .slice(0, 40);
 
       setSearchRecipes(items);
       setLoadingSearch(false);
     }, 250);
 
     return () => clearTimeout(timer);
-  }, [search, suggestedRecipes, productsMap]);
+  }, [search, suggestedRecipes]);
 
   const fridgeIngredientIds = useMemo(() => {
     const ids: string[] = [];
@@ -843,10 +983,24 @@ export default function AiPage() {
     return [...perfectResults, ...almostResults];
   }, [allMatchedResults]);
 
+  const quickResults = useMemo(() => {
+    return sectionResults((recipe) => isQuickRecipe(recipe), 20);
+  }, [allMatchedResults]);
+
+  const kidsResults = useMemo(() => {
+    return sectionResults((recipe) => isKidsRecipe(recipe), 20);
+  }, [allMatchedResults]);
+
+  const homeOnlyResults = useMemo(() => {
+    return sectionResults((_recipe, result) => result.score === 100, 20);
+  }, [allMatchedResults]);
+
+  const holidayResults = useMemo(() => {
+    return sectionResults((recipe) => isHolidayRecipe(recipe), 20);
+  }, [allMatchedResults]);
+
   function recipeKind(result: MatchResult) {
-    const text = normalizeText(
-      `${result.recipe.title} ${result.recipe.category || ""}`,
-    );
+    const text = getRecipeSearchText(result.recipe);
 
     if (/(салат|винегрет|закуска|овощн)/.test(text)) return "salad";
     if (
@@ -1004,91 +1158,6 @@ export default function AiPage() {
     })[0];
   }, [mealPlans]);
 
-
-  function getRecipeText(recipe: Recipe) {
-    return normalizeText(
-      `${recipe.title} ${recipe.category || ""} ${recipe.cuisine || ""} ${
-        recipe.difficulty || ""
-      } ${(recipe.tags || []).join(" ")} ${recipe.description || ""}`,
-    );
-  }
-
-  function getRecipeMinutes(recipe: Recipe) {
-    if (typeof recipe.cookingTime === "number" && recipe.cookingTime > 0) {
-      return recipe.cookingTime;
-    }
-
-    const text = `${recipe.cookingTimeText || ""} ${recipe.time || ""}`;
-    const match = text.match(/(\d+)/);
-
-    return match ? Number(match[1]) : 0;
-  }
-
-  function sortSectionResults(items: MatchResult[]) {
-    return [...items].sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      if (a.missingIds.length !== b.missingIds.length) {
-        return a.missingIds.length - b.missingIds.length;
-      }
-      if (b.haveIds.length !== a.haveIds.length) {
-        return b.haveIds.length - a.haveIds.length;
-      }
-      return a.recipe.title.localeCompare(b.recipe.title, "ru");
-    });
-  }
-
-  const quickResults = useMemo(() => {
-    return sortSectionResults(
-      allMatchedResults.filter((result) => {
-        const minutes = getRecipeMinutes(result.recipe);
-        const text = getRecipeText(result.recipe);
-
-        return (
-          (minutes > 0 && minutes <= 25) ||
-          /(быстр|за 15|за 20|за 25|на скорую руку|прост)/.test(text)
-        );
-      }),
-    ).slice(0, 20);
-  }, [allMatchedResults]);
-
-  const kidsResults = useMemo(() => {
-    return sortSectionResults(
-      allMatchedResults.filter((result) => {
-        const text = getRecipeText(result.recipe);
-
-        const looksLikeKids =
-          /(детск|ребен|детям|каша|сырник|запеканк|омлет|блины|оладьи|творог|пюре|тефтел|котлетк|супчик|молочн)/.test(
-            text,
-          );
-
-        const notKids =
-          /(алкогол|водк|вино|коньяк|ром|ликер|пиво|остр|чили|жгуч|хрен|уксусн|маринад)/.test(
-            text,
-          );
-
-        return looksLikeKids && !notKids;
-      }),
-    ).slice(0, 20);
-  }, [allMatchedResults]);
-
-  const homeOnlyResults = useMemo(() => {
-    return sortSectionResults(
-      allMatchedResults.filter((result) => result.score === 100),
-    ).slice(0, 25);
-  }, [allMatchedResults]);
-
-  const holidayResults = useMemo(() => {
-    return sortSectionResults(
-      allMatchedResults.filter((result) => {
-        const text = getRecipeText(result.recipe);
-
-        return /(празднич|праздник|новый год|рождеств|гости|банкет|день рождения|застоль|торжеств)/.test(
-          text,
-        );
-      }),
-    ).slice(0, 20);
-  }, [allMatchedResults]);
-
   const searchResults = useMemo(() => {
     return searchRecipes.map(buildMatch);
   }, [searchRecipes, fridgeIngredientIds]);
@@ -1099,6 +1168,7 @@ export default function AiPage() {
 
   function getRecipeTime(recipe: Recipe) {
     if (recipe.cookingTimeText) return recipe.cookingTimeText;
+    if (recipe.prepareTimeText) return recipe.prepareTimeText;
     if (recipe.time) return recipe.time;
     if (recipe.cookingTime) return `${recipe.cookingTime} мин`;
     return "";
@@ -1111,11 +1181,11 @@ export default function AiPage() {
   async function openRecipeById(recipeId: string) {
     const cached = [
       ...suggestedResults,
-      ...searchResults,
       ...quickResults,
       ...kidsResults,
       ...homeOnlyResults,
       ...holidayResults,
+      ...searchResults,
       ...favoriteResults,
     ].find((result) => result.recipe.id === recipeId);
 
@@ -1289,7 +1359,13 @@ export default function AiPage() {
     if (!familyId) return;
 
     await setDoc(
-      doc(db, "families", familyId, "cookingNow", `${plan.id}_${item.recipe.id}`),
+      doc(
+        db,
+        "families",
+        familyId,
+        "cookingNow",
+        `${plan.id}_${item.recipe.id}`,
+      ),
       {
         recipeId: item.recipe.id,
         title: item.recipe.title,
@@ -1364,7 +1440,13 @@ export default function AiPage() {
 
     for (const item of plan.items) {
       await setDoc(
-        doc(db, "families", familyId, "cookingNow", `${plan.id}_${item.recipe.id}`),
+        doc(
+          db,
+          "families",
+          familyId,
+          "cookingNow",
+          `${plan.id}_${item.recipe.id}`,
+        ),
         {
           recipeId: item.recipe.id,
           title: item.recipe.title,
@@ -1575,6 +1657,11 @@ export default function AiPage() {
   function RecipeCard({ result }: { result: MatchResult }) {
     const recipe = result.recipe;
     const favorite = isFavoriteRecipe(recipe.id);
+    const recipeTime = getRecipeTime(recipe);
+    const statusText =
+      result.missingIds.length > 0
+        ? `Не хватает: ${result.missingIds.length}`
+        : "Можно готовить";
 
     return (
       <div className="relative">
@@ -1587,52 +1674,63 @@ export default function AiPage() {
             setSelectedRecipe(result);
             setMessage("");
           }}
-          className="w-full rounded-3xl bg-slate-50 p-4 text-left"
+          className="w-full overflow-hidden rounded-3xl bg-slate-50 text-left"
         >
-          <div className="flex items-start justify-between gap-3 pr-7">
-            <div>
-              <h3 className="text-lg font-semibold text-slate-900">
-                🔍 {recipe.title}
-              </h3>
+          {recipe.poster ? (
+            <div className="h-36 w-full overflow-hidden bg-slate-200">
+              <img
+                src={recipe.poster}
+                alt={recipe.title}
+                loading="lazy"
+                className="h-full w-full object-cover"
+              />
+            </div>
+          ) : null}
 
-              <p className="mt-1 text-sm text-slate-500">
-                {recipe.category || "Рецепт"}
-                {getRecipeTime(recipe) ? ` · ${getRecipeTime(recipe)}` : ""}
-              </p>
+          <div className="p-4">
+            <div className="flex items-start justify-between gap-3 pr-7">
+              <div className="min-w-0 flex-1">
+                <h3 className="break-words text-lg font-semibold leading-snug text-slate-900">
+                  🔍 {recipe.title}
+                </h3>
+
+                <p className="mt-1 text-sm text-slate-500">
+                  {recipe.category || "Рецепт"}
+                  {recipeTime ? ` · ⏱ ${recipeTime}` : ""}
+                  {recipe.difficulty ? ` · ${recipe.difficulty}` : ""}
+                </p>
+              </div>
+
+              <div
+                className={`shrink-0 rounded-full px-3 py-1 text-sm font-semibold ${
+                  result.score === 100
+                    ? "bg-green-100 text-green-700"
+                    : result.score >= 70
+                      ? "bg-orange-100 text-orange-700"
+                      : "bg-slate-100 text-slate-600"
+                }`}
+              >
+                {result.score}%
+              </div>
             </div>
 
-            <div
-              className={`rounded-full px-3 py-1 text-sm font-semibold ${
-                result.score === 100
-                  ? "bg-green-100 text-green-700"
-                  : result.score >= 70
-                    ? "bg-orange-100 text-orange-700"
-                    : "bg-slate-100 text-slate-600"
-              }`}
-            >
-              {result.score}%
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200">
+              <div
+                className={`h-full rounded-full ${
+                  result.score === 100
+                    ? "bg-green-500"
+                    : result.score >= 70
+                      ? "bg-orange-400"
+                      : "bg-slate-400"
+                }`}
+                style={{ width: `${result.score}%` }}
+              />
             </div>
-          </div>
 
-          <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-200">
-            <div
-              className={`h-full rounded-full ${
-                result.score === 100
-                  ? "bg-green-500"
-                  : result.score >= 70
-                    ? "bg-orange-400"
-                    : "bg-slate-400"
-              }`}
-              style={{ width: `${result.score}%` }}
-            />
+            <p className="mt-3 text-sm text-slate-500">
+              Есть {result.haveIds.length} из {result.total} · {statusText}
+            </p>
           </div>
-
-          <p className="mt-3 text-sm text-slate-500">
-            Есть {result.haveIds.length} из {result.total}
-            {result.missingIds.length > 0
-              ? ` · не хватает ${result.missingIds.length}`
-              : " · можно готовить"}
-          </p>
         </motion.button>
 
         <button
@@ -1648,7 +1746,6 @@ export default function AiPage() {
       </div>
     );
   }
-
 
   function RecipeListBlock({
     title,
@@ -1683,7 +1780,6 @@ export default function AiPage() {
   }
 
   const isSearching = normalizeText(search).length >= 2;
-
 
   const cookingGroups = useMemo(() => {
     const groups = new Map<
@@ -1751,7 +1847,7 @@ export default function AiPage() {
           <p className="text-sm text-slate-500">FamilyShop</p>
           <h1 className="text-3xl font-bold">AI Cook 🤖</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Меню на сегодня из продуктов дома
+            Рецепты по холодильнику, времени и семейным сценариям
           </p>
         </motion.header>
 
@@ -1789,17 +1885,11 @@ export default function AiPage() {
 
           {!isSearching && cookingRecipes.length > 0 && (
             <ToggleBlock
-            title="👨‍🍳 Будем готовить"
-            count={cookingRecipes.length}
-            open={showCooking}
-            onToggle={() => setShowCooking((prev) => !prev)}
-          >
-            {cookingRecipes.length === 0 ? (
-              <p className="text-sm text-slate-500">
-                Пока нет выбранных блюд. Добавь недостающее из завтрака, обеда
-                или ужина — весь набор появится здесь отдельной группой.
-              </p>
-            ) : (
+              title="👨‍🍳 Будем готовить"
+              count={cookingRecipes.length}
+              open={showCooking}
+              onToggle={() => setShowCooking((prev) => !prev)}
+            >
               <AnimatePresence mode="popLayout">
                 <div className="space-y-4">
                   {cookingGroups.map((group) => {
@@ -1824,7 +1914,9 @@ export default function AiPage() {
                             </h3>
                           </div>
 
-                          <span className={`rounded-full px-3 py-1 text-sm font-semibold ${style.badge}`}>
+                          <span
+                            className={`rounded-full px-3 py-1 text-sm font-semibold ${style.badge}`}
+                          >
                             {group.items.length}
                           </span>
                         </div>
@@ -1843,7 +1935,9 @@ export default function AiPage() {
                               </h4>
                               <p className="mt-1 text-sm text-slate-500">
                                 {recipe.category || "Рецепт"}
-                                {recipe.cookingTime ? ` · ${recipe.cookingTime}` : ""}
+                                {recipe.cookingTime
+                                  ? ` · ${recipe.cookingTime}`
+                                  : ""}
                                 {typeof recipe.score === "number"
                                   ? ` · ${recipe.score}%`
                                   : ""}
@@ -1880,8 +1974,7 @@ export default function AiPage() {
                   })}
                 </div>
               </AnimatePresence>
-            )}
-          </ToggleBlock>
+            </ToggleBlock>
           )}
 
           {!isSearching && (
@@ -1966,7 +2059,6 @@ export default function AiPage() {
                   </div>
                 )}
               </ToggleBlock>
-
             </>
           )}
         </section>
@@ -2012,6 +2104,16 @@ export default function AiPage() {
                 </div>
 
                 <div className="overflow-y-auto p-5 pb-40">
+                  {selectedRecipe.recipe.poster ? (
+                    <div className="mb-5 overflow-hidden rounded-3xl bg-slate-100">
+                      <img
+                        src={selectedRecipe.recipe.poster}
+                        alt={selectedRecipe.recipe.title}
+                        className="h-52 w-full object-cover"
+                      />
+                    </div>
+                  ) : null}
+
                   <div className="mb-5 rounded-3xl bg-slate-50 p-4">
                     <div className="flex items-center justify-between">
                       <div>
@@ -2048,6 +2150,36 @@ export default function AiPage() {
                       {selectedRecipe.recipe.description}
                     </p>
                   )}
+
+                  {selectedRecipe.recipe.note ? (
+                    <p className="mb-5 rounded-2xl bg-blue-50 p-4 text-sm leading-6 text-blue-800">
+                      💡 {selectedRecipe.recipe.note}
+                    </p>
+                  ) : null}
+
+                  {selectedRecipe.recipe.rawIngredients &&
+                  selectedRecipe.recipe.rawIngredients.length > 0 ? (
+                    <>
+                      <h3 className="mb-2 font-semibold">
+                        Ингредиенты по рецепту
+                      </h3>
+                      <div className="mb-5 space-y-2">
+                        {selectedRecipe.recipe.rawIngredients.map(
+                          (ingredient, index) => (
+                            <div
+                              key={`${ingredient.ingredientId || ingredient.name}-${index}`}
+                              className="rounded-2xl bg-slate-50 px-4 py-2 text-sm text-slate-700"
+                            >
+                              {ingredient.name || ingredient.ingredientId}
+                              {ingredient.quantity
+                                ? ` — ${ingredient.quantity}`
+                                : ""}
+                            </div>
+                          ),
+                        )}
+                      </div>
+                    </>
+                  ) : null}
 
                   <h3 className="mb-2 font-semibold">Есть дома</h3>
 
@@ -2109,6 +2241,14 @@ export default function AiPage() {
                         transition={{ delay: index * 0.03 }}
                         className="rounded-2xl bg-slate-50 p-4 text-sm leading-6 text-slate-700"
                       >
+                        {selectedRecipe.recipe.stepImages?.[index] ? (
+                          <img
+                            src={selectedRecipe.recipe.stepImages[index]}
+                            alt={`Шаг ${index + 1}`}
+                            loading="lazy"
+                            className="mb-3 max-h-56 w-full rounded-xl object-cover"
+                          />
+                        ) : null}
                         <b>Шаг {index + 1}.</b> {step}
                       </motion.div>
                     ))}
