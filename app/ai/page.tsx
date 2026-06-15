@@ -573,10 +573,35 @@ export default function AiPage() {
   }
 
   function makeFavoriteRecipeDocId(recipe: Recipe) {
-    return (
-      normalizeIngredientKey(recipe.id || recipe.title || "recipe").slice(0, 120) ||
-      "recipe"
-    );
+    const base = normalizeIngredientKey(
+      `${recipe.title || "recipe"}_${recipe.id || ""}`
+    )
+      .replace(/[^a-zа-я0-9_]/gi, "_")
+      .replace(/_+/g, "_")
+      .replace(/^_+|_+$/g, "");
+
+    return base.slice(0, 120) || "recipe";
+  }
+
+  function cleanForFirestore<T>(value: T): T {
+    if (Array.isArray(value)) {
+      return value
+        .filter((item) => item !== undefined)
+        .map((item) => cleanForFirestore(item)) as T;
+    }
+
+    if (value && typeof value === "object") {
+      const cleanObject: Record<string, unknown> = {};
+
+      Object.entries(value as Record<string, unknown>).forEach(([key, item]) => {
+        if (item === undefined) return;
+        cleanObject[key] = cleanForFirestore(item);
+      });
+
+      return cleanObject as T;
+    }
+
+    return value;
   }
 
   function hasAnyWord(text: string, words: string[]) {
@@ -1477,6 +1502,40 @@ export default function AiPage() {
     return `familyshop_ai_matched_recipes_${familyId || "guest"}`;
   }, [familyId]);
 
+  function getSavedRecipeCache() {
+    if (typeof window === "undefined") return null;
+
+    const exactSaved = window.localStorage.getItem(recipeCacheKey);
+    if (exactSaved) return exactSaved;
+
+    const lastSaved = window.localStorage.getItem("familyshop_ai_matched_recipes_last");
+    if (lastSaved) return lastSaved;
+
+    let newestValue: string | null = null;
+    let newestTime = 0;
+
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (!key || !key.startsWith("familyshop_ai_matched_recipes_")) continue;
+
+      const value = window.localStorage.getItem(key);
+      if (!value) continue;
+
+      try {
+        const parsed = JSON.parse(value) as { updatedAt?: number };
+        const updatedAt = parsed.updatedAt || 0;
+        if (updatedAt >= newestTime) {
+          newestTime = updatedAt;
+          newestValue = value;
+        }
+      } catch {
+        // ignore broken cache
+      }
+    }
+
+    return newestValue;
+  }
+
   function buildMatch(recipe: Recipe): MatchResult {
     const fridgeSet = fridgeIngredientSet;
     const allIds = Array.from(new Set(recipe.ingredientIds || []));
@@ -1519,7 +1578,7 @@ export default function AiPage() {
     }
 
     try {
-      const saved = window.localStorage.getItem(recipeCacheKey);
+      const saved = getSavedRecipeCache();
 
       if (!saved) {
         setRecipesNeedRefresh(true);
@@ -1643,14 +1702,14 @@ export default function AiPage() {
     setRecipesNeedRefresh(false);
 
     try {
-      window.localStorage.setItem(
-        recipeCacheKey,
-        JSON.stringify({
-          fridgeKey: fridgeSnapshotKey,
-          recipeIds: finalResults.map((result) => result.recipe.id),
-          updatedAt: Date.now(),
-        }),
-      );
+      const cachePayload = JSON.stringify({
+        fridgeKey: fridgeSnapshotKey,
+        recipeIds: finalResults.map((result) => result.recipe.id),
+        updatedAt: Date.now(),
+      });
+
+      window.localStorage.setItem(recipeCacheKey, cachePayload);
+      window.localStorage.setItem("familyshop_ai_matched_recipes_last", cachePayload);
     } catch (error) {
       console.warn("AI cached recipes save warning", error);
     }
@@ -2015,7 +2074,7 @@ export default function AiPage() {
     const favoriteDocId = makeFavoriteRecipeDocId(recipe);
 
     try {
-      if (isFavoriteRecipe(recipe)) {
+      if (isFavoriteRecipe(recipe.id)) {
         await deleteDoc(
           doc(db, "families", familyId, "favoriteRecipes", favoriteDocId),
         );
@@ -2025,12 +2084,12 @@ export default function AiPage() {
 
       await setDoc(
         doc(db, "families", familyId, "favoriteRecipes", favoriteDocId),
-        {
+        cleanForFirestore({
           ...recipe,
           id: recipe.id,
           favoriteDocId,
           createdAt: serverTimestamp(),
-        },
+        }),
         { merge: true },
       );
 
@@ -2549,7 +2608,7 @@ export default function AiPage() {
 
   function RecipeCard({ result }: { result: MatchResult }) {
     const recipe = result.recipe;
-    const favorite = isFavoriteRecipe(recipe);
+    const favorite = isFavoriteRecipe(recipe.id);
     const recipeTime = getRecipeTime(recipe);
     const statusText =
       result.missingIds.length > 0
@@ -2655,7 +2714,7 @@ export default function AiPage() {
           {matchingRecipes ? "⏳ Обновляю..." : "🔄 Обновить рецепты"}
         </button>
 
-        {matchingRecipes ? (
+        {loadingSuggested || matchingRecipes ? (
           <p className="text-sm text-slate-500">Подбираю рецепты...</p>
         ) : items.length === 0 ? (
           <p className="text-sm text-slate-500">{emptyText}</p>
@@ -2712,7 +2771,7 @@ export default function AiPage() {
     );
   }, [cookingRecipes]);
 
-  const recipeCountText = matchingRecipes ? "…" : null;
+  const recipeCountText = matchingRecipes || loadingSuggested ? "…" : null;
 
   return (
     <main className="min-h-screen bg-slate-100 text-slate-900">
@@ -2920,7 +2979,7 @@ export default function AiPage() {
                 {matchingRecipes ? "⏳ Обновляю..." : "🔄 Обновить рецепты"}
               </button>
 
-              {matchingRecipes ? (
+              {loadingSuggested || matchingRecipes ? (
                 <p className="text-sm text-slate-500">Собираю меню...</p>
               ) : mealPlans.length === 0 ? (
                 <p className="text-sm text-slate-500">
@@ -2954,7 +3013,7 @@ export default function AiPage() {
                   {matchingRecipes ? "⏳ Обновляю..." : "🔄 Обновить рецепты"}
                 </button>
 
-                {matchingRecipes ? (
+                {loadingSuggested || matchingRecipes ? (
                   <p className="text-sm text-slate-500">
                     Подбираю быстрые рецепты...
                   </p>
