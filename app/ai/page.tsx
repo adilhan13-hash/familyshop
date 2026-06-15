@@ -7,7 +7,6 @@ import BottomNav from "../../components/BottomNav";
 import { useFamilyAuth } from "../../components/AuthProvider";
 import { db } from "../../lib/firebase";
 import {
-  addDoc,
   collection,
   deleteDoc,
   doc,
@@ -17,6 +16,7 @@ import {
   query,
   serverTimestamp,
   setDoc,
+  writeBatch,
 } from "firebase/firestore";
 import { addActivity } from "../../lib/activity";
 
@@ -77,6 +77,7 @@ type Recipe = {
   stepImages?: string[];
   source?: string;
   searchTitle?: string;
+  searchText?: string;
 };
 
 type CookingRecipe = {
@@ -399,8 +400,15 @@ export default function AiPage() {
   const [loadingProducts, setLoadingProducts] = useState(true);
   const [loadingFridge, setLoadingFridge] = useState(true);
   const [loadingSuggested, setLoadingSuggested] = useState(true);
+  const [matchingRecipes, setMatchingRecipes] = useState(false);
+  const [matchProgress, setMatchProgress] = useState(0);
+  const [matchedResultsState, setMatchedResultsState] = useState<MatchResult[]>(
+    [],
+  );
   const [loadingSearch, setLoadingSearch] = useState(false);
   const [loadingFavorites, setLoadingFavorites] = useState(true);
+  const [addingRecipeId, setAddingRecipeId] = useState<string | null>(null);
+  const [addingMealPlanId, setAddingMealPlanId] = useState<string | null>(null);
 
   const [showMealPlan, setShowMealPlan] = useState(false);
   const [mealRecipeOverrides, setMealRecipeOverrides] = useState<
@@ -540,6 +548,8 @@ export default function AiPage() {
   }
 
   function getRecipeSearchText(recipe: Recipe) {
+    if (recipe.searchText) return recipe.searchText;
+
     const rawIngredientsText = (recipe.rawIngredients || [])
       .map(
         (ingredient) =>
@@ -554,6 +564,10 @@ export default function AiPage() {
         recipe,
       )} ${rawIngredientsText}`,
     );
+  }
+
+  function makeShoppingDocId(value: string) {
+    return normalizeIngredientKey(value || "unknown").slice(0, 120) || "unknown";
   }
 
   function hasAnyWord(text: string, words: string[]) {
@@ -1012,6 +1026,11 @@ export default function AiPage() {
                   : [],
                 source: recipe.source,
                 searchTitle: recipe.searchTitle || normalizeText(title),
+                searchText: normalizeText(
+                  `${title} ${recipe.searchTitle || ""} ${recipe.category || ""} ${
+                    recipe.categorySlug || ""
+                  } ${recipe.cuisine || ""} ${recipe.difficulty || ""} ${Array.isArray(recipe.tags) ? recipe.tags.map((tag: RecipeTag) => `${tag.name || ""} ${tag.slug || ""}`).join(" ") : ""} ${Array.isArray(recipe.rawIngredients) ? recipe.rawIngredients.map((ingredient: RawIngredient) => `${ingredient.name || ""} ${ingredient.ingredientId || ""} ${ingredient.quantity || ""}`).join(" ") : ""}`,
+                ),
               };
             })
           : [];
@@ -1073,6 +1092,7 @@ export default function AiPage() {
             stepImages: Array.isArray(data.stepImages) ? data.stepImages : [],
             source: data.source,
             searchTitle: data.searchTitle,
+            searchText: data.searchText,
           });
         });
 
@@ -1165,8 +1185,12 @@ export default function AiPage() {
     return Array.from(new Set(ids));
   }, [fridgeItems, productsMap]);
 
+  const fridgeIngredientSet = useMemo(() => {
+    return new Set(fridgeIngredientIds);
+  }, [fridgeIngredientIds]);
+
   function buildMatch(recipe: Recipe): MatchResult {
-    const fridgeSet = new Set(fridgeIngredientIds);
+    const fridgeSet = fridgeIngredientSet;
     const allIds = Array.from(new Set(recipe.ingredientIds || []));
     const optionalIds = new Set(recipe.optionalIngredientIds || []);
 
@@ -1196,32 +1220,90 @@ export default function AiPage() {
     };
   }
 
-  const allMatchedResults = useMemo(() => {
-    const uniqueByTitle = new Map<string, MatchResult>();
+  useEffect(() => {
+    if (!suggestedRecipes.length) {
+      setMatchedResultsState([]);
+      setMatchProgress(0);
+      setMatchingRecipes(false);
+      return;
+    }
 
-    suggestedRecipes
-      .map(buildMatch)
-      .filter((result) => result.total > 0 && result.score > 0)
-      .sort((a, b) => {
-        if (b.score !== a.score) return b.score - a.score;
-        if (b.haveIds.length !== a.haveIds.length) {
-          return b.haveIds.length - a.haveIds.length;
-        }
-        if (a.missingIds.length !== b.missingIds.length) {
-          return a.missingIds.length - b.missingIds.length;
-        }
-        return a.recipe.title.localeCompare(b.recipe.title, "ru");
-      })
-      .forEach((result) => {
-        const titleKey = normalizeText(result.recipe.title);
+    let cancelled = false;
 
-        if (!uniqueByTitle.has(titleKey)) {
-          uniqueByTitle.set(titleKey, result);
-        }
-      });
+    async function processRecipesInChunks() {
+      setMatchingRecipes(true);
+      setMatchProgress(0);
 
-    return Array.from(uniqueByTitle.values());
-  }, [suggestedRecipes, fridgeIngredientIds]);
+      const uniqueByTitle = new Map<string, MatchResult>();
+      const chunkSize = 40;
+
+      for (let index = 0; index < suggestedRecipes.length; index += chunkSize) {
+        if (cancelled) return;
+
+        const chunk = suggestedRecipes.slice(index, index + chunkSize);
+
+        chunk
+          .map(buildMatch)
+          .filter((result) => result.total > 0 && result.score > 0)
+          .forEach((result) => {
+            const titleKey = normalizeText(result.recipe.title);
+
+            if (!uniqueByTitle.has(titleKey)) {
+              uniqueByTitle.set(titleKey, result);
+            }
+          });
+
+        if (!cancelled) {
+          setMatchProgress(
+            Math.round(
+              ((index + chunk.length) / suggestedRecipes.length) * 100,
+            ),
+          );
+        }
+
+        await new Promise((resolve) => {
+          if (typeof window !== "undefined" && "requestAnimationFrame" in window) {
+            window.requestAnimationFrame(() => resolve(null));
+            return;
+          }
+
+          setTimeout(resolve, 0);
+        });
+      }
+
+      const finalResults = Array.from(uniqueByTitle.values())
+        .sort((a, b) => {
+          if (b.score !== a.score) return b.score - a.score;
+          if (b.haveIds.length !== a.haveIds.length) {
+            return b.haveIds.length - a.haveIds.length;
+          }
+          if (a.missingIds.length !== b.missingIds.length) {
+            return a.missingIds.length - b.missingIds.length;
+          }
+          return a.recipe.title.localeCompare(b.recipe.title, "ru");
+        })
+        .slice(0, 800);
+
+      if (!cancelled) {
+        setMatchedResultsState(finalResults);
+        setMatchProgress(100);
+
+        window.setTimeout(() => {
+          if (!cancelled) {
+            setMatchingRecipes(false);
+          }
+        }, 150);
+      }
+    }
+
+    processRecipesInChunks();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [suggestedRecipes, fridgeIngredientIds, fridgeIngredientSet]);
+
+  const allMatchedResults = matchedResultsState;
 
   const suggestedResults = useMemo(() => {
     const perfectResults = allMatchedResults
@@ -1520,43 +1602,75 @@ export default function AiPage() {
   }
 
   async function addMissingToShopping(result: MatchResult) {
-    if (!familyId) return;
+    if (!familyId || addingRecipeId) return;
 
-    for (const ingredientId of result.missingIds) {
-      const ingredient = getIngredientInfo(ingredientId);
-      const name = makeLabel(ingredient.icon, ingredient.name);
+    if (result.missingIds.length === 0) {
+      await startCooking(result);
+      return;
+    }
 
-      await addDoc(collection(db, "families", familyId, "shopping"), {
-        name,
-        productName: ingredient.name,
-        icon: ingredient.icon,
-        productId: ingredient.productId || ingredientId,
-        ingredientId: ingredient.productId || ingredientId,
-        category: ingredient.category || "Другое",
-        source: "AI Cook",
-        recipeId: result.recipe.id,
-        createdAt: serverTimestamp(),
-      });
+    try {
+      setAddingRecipeId(result.recipe.id);
+      setMessage(`🛒 Добавляю недостающее для "${result.recipe.title}"...`);
+
+      const batch = writeBatch(db);
+
+      for (const ingredientId of result.missingIds) {
+        const ingredient = getIngredientInfo(ingredientId);
+        const name = makeLabel(ingredient.icon, ingredient.name);
+
+        const shoppingDocId = `ai_${makeShoppingDocId(
+          ingredient.productId || ingredientId,
+        )}`;
+        const shoppingRef = doc(
+          db,
+          "families",
+          familyId,
+          "shopping",
+          shoppingDocId,
+        );
+
+        batch.set(shoppingRef, {
+          name,
+          productName: ingredient.name,
+          icon: ingredient.icon,
+          productId: ingredient.productId || ingredientId,
+          ingredientId: ingredient.productId || ingredientId,
+          category: ingredient.category || "Другое",
+          source: "AI Cook",
+          recipeId: result.recipe.id,
+          recipeTitle: result.recipe.title,
+          createdAt: serverTimestamp(),
+        }, { merge: true });
+      }
+
+      await batch.commit();
 
       await addActivity({
         familyId,
         userId: appUser?.uid || "unknown",
         userName: appUser?.displayName || "Без имени",
         type: "ai_add_to_shopping",
-        title: "AI добавил ингредиент",
-        message: `${name} для блюда ${result.recipe.title}`,
+        title: "AI добавил ингредиенты",
+        message: `${result.missingIds.length} шт. для блюда ${result.recipe.title}`,
         emoji: "🤖",
-        itemName: name,
+        itemName: result.recipe.title,
       });
+
+      await startCooking(result);
+
+      setMessage(
+        `✅ ${result.missingIds.length} ингредиент(ов) для "${result.recipe.title}" добавлено в покупки.`,
+      );
+      setSelectedRecipe(null);
+      setAddedAnimation(true);
+      setTimeout(() => setAddedAnimation(false), 2000);
+    } catch (error) {
+      console.warn("AI add missing ingredients warning", error);
+      setMessage("⚠️ Не получилось добавить ингредиенты. Попробуй ещё раз.");
+    } finally {
+      setAddingRecipeId(null);
     }
-
-    await startCooking(result);
-
-    setMessage(
-      `✅ Недостающее для "${result.recipe.title}" добавлено в покупки.`,
-    );
-    setAddedAnimation(true);
-    setTimeout(() => setAddedAnimation(false), 2000);
   }
 
   async function markCookingDone(item: CookingRecipe) {
@@ -1659,91 +1773,125 @@ export default function AiPage() {
   }
 
   async function addMealPlanToCooking(plan: MealPlan, addMissing: boolean) {
-    if (!familyId) return;
+    const actionId = `${plan.id}_${addMissing ? "missing" : "cooking"}`;
+    if (!familyId || addingMealPlanId) return;
 
     if (plan.items.length === 0) {
       setMessage(`В "${plan.title}" нет выбранных блюд.`);
       return;
     }
 
-    if (addMissing && plan.missingIds.length > 0) {
-      for (const ingredientId of plan.missingIds) {
-        const ingredient = getIngredientInfo(ingredientId);
-        const name = makeLabel(ingredient.icon, ingredient.name);
+    try {
+      setAddingMealPlanId(actionId);
+      setMessage(
+        addMissing && plan.missingIds.length > 0
+          ? `🛒 Добавляю недостающее для "${plan.title}"...`
+          : `👨‍🍳 Добавляю "${plan.title}" в “Будем готовить”...`,
+      );
 
-        await addDoc(collection(db, "families", familyId, "shopping"), {
-          name,
-          productName: ingredient.name,
-          icon: ingredient.icon,
-          productId: ingredient.productId || ingredientId,
-          ingredientId: ingredient.productId || ingredientId,
-          category: ingredient.category || "Другое",
-          source: "AI Cook meal plan",
-          mealPlanId: plan.id,
-          mealPlanTitle: plan.title,
-          createdAt: serverTimestamp(),
-        });
+      const batch = writeBatch(db);
 
-        await addActivity({
-          familyId,
-          userId: appUser?.uid || "unknown",
-          userName: appUser?.displayName || "Без имени",
-          type: "ai_meal_add_to_shopping",
-          title: "AI добавил для меню",
-          message: `${name} для набора ${plan.title}`,
-          emoji: "🍽",
-          itemName: name,
-        });
+      if (addMissing && plan.missingIds.length > 0) {
+        for (const ingredientId of plan.missingIds) {
+          const ingredient = getIngredientInfo(ingredientId);
+          const name = makeLabel(ingredient.icon, ingredient.name);
+
+          const shoppingDocId = `ai_${makeShoppingDocId(
+            ingredient.productId || ingredientId,
+          )}`;
+          const shoppingRef = doc(
+            db,
+            "families",
+            familyId,
+            "shopping",
+            shoppingDocId,
+          );
+
+          batch.set(shoppingRef, {
+            name,
+            productName: ingredient.name,
+            icon: ingredient.icon,
+            productId: ingredient.productId || ingredientId,
+            ingredientId: ingredient.productId || ingredientId,
+            category: ingredient.category || "Другое",
+            source: "AI Cook meal plan",
+            mealPlanId: plan.id,
+            mealPlanTitle: plan.title,
+            createdAt: serverTimestamp(),
+          }, { merge: true });
+        }
       }
-    }
 
-    for (const item of plan.items) {
-      await setDoc(
-        doc(
+      for (const item of plan.items) {
+        const cookingRef = doc(
           db,
           "families",
           familyId,
           "cookingNow",
           `${plan.id}_${item.recipe.id}`,
-        ),
-        {
-          recipeId: item.recipe.id,
-          title: item.recipe.title,
-          category: item.recipe.category || "Рецепт",
-          cookingTime: getRecipeTime(item.recipe),
-          score: item.score,
-          mealPlanId: plan.id,
-          mealPlanTitle: plan.title,
-          mealPlanEmoji: plan.emoji,
-          mealPlanSubtitle: plan.subtitle,
+        );
+
+        batch.set(
+          cookingRef,
+          {
+            recipeId: item.recipe.id,
+            title: item.recipe.title,
+            category: item.recipe.category || "Рецепт",
+            cookingTime: getRecipeTime(item.recipe),
+            score: item.score,
+            mealPlanId: plan.id,
+            mealPlanTitle: plan.title,
+            mealPlanEmoji: plan.emoji,
+            mealPlanSubtitle: plan.subtitle,
+            userId: appUser?.uid || "unknown",
+            userName: appUser?.displayName || "Без имени",
+            createdAt: serverTimestamp(),
+          },
+          { merge: true },
+        );
+      }
+
+      await batch.commit();
+
+      if (addMissing && plan.missingIds.length > 0) {
+        await addActivity({
+          familyId,
           userId: appUser?.uid || "unknown",
           userName: appUser?.displayName || "Без имени",
-          createdAt: serverTimestamp(),
-        },
-        { merge: true },
+          type: "ai_meal_add_to_shopping",
+          title: "AI добавил ингредиенты для меню",
+          message: `${plan.missingIds.length} шт. для набора ${plan.title}`,
+          emoji: "🍽",
+          itemName: plan.title,
+        });
+      }
+
+      await addActivity({
+        familyId,
+        userId: appUser?.uid || "unknown",
+        userName: appUser?.displayName || "Без имени",
+        type: "ai_meal_start_cooking",
+        title: "Будет готовить меню",
+        message: plan.title,
+        emoji: plan.emoji,
+        itemName: plan.title,
+      });
+
+      setMessage(
+        addMissing && plan.missingIds.length > 0
+          ? `🛒 ${plan.missingIds.length} ингредиент(ов) для "${plan.title}" добавлено в покупки, а меню добавлено в “Будем готовить”.`
+          : `👨‍🍳 "${plan.title}" добавлен в “Будем готовить”.`,
       );
+      setAddedAnimation(addMissing && plan.missingIds.length > 0);
+      setCookingAnimation(true);
+      setTimeout(() => setAddedAnimation(false), 2000);
+      setTimeout(() => setCookingAnimation(false), 2000);
+    } catch (error) {
+      console.warn("AI add meal plan warning", error);
+      setMessage("⚠️ Не получилось добавить меню. Попробуй ещё раз.");
+    } finally {
+      setAddingMealPlanId(null);
     }
-
-    await addActivity({
-      familyId,
-      userId: appUser?.uid || "unknown",
-      userName: appUser?.displayName || "Без имени",
-      type: "ai_meal_start_cooking",
-      title: "Будет готовить меню",
-      message: plan.title,
-      emoji: plan.emoji,
-      itemName: plan.title,
-    });
-
-    setMessage(
-      addMissing && plan.missingIds.length > 0
-        ? `🛒 Недостающее для "${plan.title}" добавлено в покупки, а меню добавлено в “Будем готовить”.`
-        : `👨‍🍳 "${plan.title}" добавлен в “Будем готовить”.`,
-    );
-    setAddedAnimation(addMissing && plan.missingIds.length > 0);
-    setCookingAnimation(true);
-    setTimeout(() => setAddedAnimation(false), 2000);
-    setTimeout(() => setCookingAnimation(false), 2000);
   }
 
   async function addMealMissingToShopping(plan: MealPlan) {
@@ -1892,7 +2040,7 @@ export default function AiPage() {
           <button
             type="button"
             onClick={() => addMealPlanToCooking(plan, false)}
-            disabled={plan.items.length === 0}
+            disabled={plan.items.length === 0 || addingMealPlanId !== null}
             className="w-full rounded-2xl bg-slate-900 px-3 py-3 text-sm font-semibold text-white disabled:opacity-50"
           >
             👨‍🍳 Будем готовить
@@ -1902,7 +2050,7 @@ export default function AiPage() {
             <button
               type="button"
               onClick={() => addMealMissingToShopping(plan)}
-              disabled={plan.items.length === 0}
+              disabled={plan.items.length === 0 || addingMealPlanId !== null}
               className={`w-full rounded-2xl px-3 py-3 text-sm font-semibold disabled:opacity-50 ${style.add}`}
             >
               🛒 Добавить недостающее
@@ -2105,6 +2253,25 @@ export default function AiPage() {
           <p className="mt-1 text-sm text-slate-500">
             Рецепты по холодильнику, времени и семейным сценариям
           </p>
+
+          {matchingRecipes && (
+            <div className="mt-3 rounded-2xl bg-blue-50 px-4 py-3">
+              <div className="text-sm font-medium text-blue-700">
+                🤖 Сопоставляю холодильник и рецепты...
+              </div>
+
+              <div className="mt-2 h-2 overflow-hidden rounded-full bg-blue-100">
+                <div
+                  className="h-full rounded-full bg-blue-500 transition-all"
+                  style={{ width: `${matchProgress}%` }}
+                />
+              </div>
+
+              <div className="mt-1 text-xs text-blue-600">
+                {matchProgress}% обработано
+              </div>
+            </div>
+          )}
         </motion.header>
 
         <section className="space-y-5 px-5">
@@ -2519,9 +2686,12 @@ export default function AiPage() {
                         whileTap={{ scale: 0.96 }}
                         type="button"
                         onClick={() => addMissingToShopping(selectedRecipe)}
-                        className="mb-5 w-full rounded-2xl bg-green-500 px-4 py-3 font-medium text-white"
+                        disabled={addingRecipeId !== null}
+                        className="mb-5 w-full rounded-2xl bg-green-500 px-4 py-3 font-medium text-white disabled:opacity-60"
                       >
-                        🛒 Добавить недостающее в покупки
+                        {addingRecipeId === selectedRecipe.recipe.id
+                          ? "⏳ Добавляю..."
+                          : "🛒 Добавить недостающее в покупки"}
                       </motion.button>
                     </>
                   )}
