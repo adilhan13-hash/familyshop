@@ -2123,24 +2123,43 @@ export default function AiPage() {
 
   function showNextDeckRecipe(direction: "left" | "right" | "up" | "next") {
     setSwipeDirection(direction);
-    setRecipeRefreshSeed((prev) => prev + 1);
-    setDeckIndex((prev) => (deckResults.length > 0 ? prev + 1 : 0));
+
+    setDeckIndex((prev) => {
+      if (deckResults.length === 0) return 0;
+      return (prev + 1) % deckResults.length;
+    });
+  }
+
+  function showPrevDeckRecipe() {
+    setSwipeDirection("left");
+
+    setDeckIndex((prev) => {
+      if (deckResults.length === 0) return 0;
+      return (prev - 1 + deckResults.length) % deckResults.length;
+    });
   }
 
   function handleRecipeDragEnd(result: MatchResult, info: PanInfo) {
-    if (info.offset.x > 90) {
-      void toggleFavoriteRecipe(result.recipe);
+    const absX = Math.abs(info.offset.x);
+    const absY = Math.abs(info.offset.y);
+
+    if (absX < 80 && absY < 80) return;
+
+    // Слева направо — следующий рецепт.
+    if (absX > absY && info.offset.x > 90) {
       showNextDeckRecipe("right");
       return;
     }
 
-    if (info.offset.x < -90) {
-      showNextDeckRecipe("left");
+    // Справа налево — предыдущий рецепт.
+    if (absX > absY && info.offset.x < -90) {
+      showPrevDeckRecipe();
       return;
     }
 
-    if (info.offset.y < -110) {
-      void startCooking(result);
+    // Сверху вниз — добавить в избранное.
+    if (absY > absX && info.offset.y > 110) {
+      void toggleFavoriteRecipe(result.recipe);
       showNextDeckRecipe("up");
     }
   }
@@ -2773,43 +2792,45 @@ export default function AiPage() {
       label: string;
       count: number | string;
     }> = [
-      { id: "ready", label: "Можно", count: readyResults.length || "—" },
-      { id: "kids", label: "Детское", count: kidsResults.length },
+      { id: "ready", label: "✅ Можно", count: readyResults.length || "—" },
+      { id: "kids", label: "👶 Детское", count: kidsResults.length },
       {
         id: "categories",
-        label: "Категории",
+        label: "▦ Категории",
         count: availableRecipeKinds.length || "—",
       },
-      { id: "favorites", label: "Избранное", count: favoriteResults.length },
+      { id: "favorites", label: "⭐ Избранное", count: favoriteResults.length },
     ];
 
     return (
       <div className="space-y-4">
-        <div className="flex gap-2 overflow-x-auto pb-1">
-          {tabs.map((tab) => {
-            const active = activeDeckMode === tab.id;
+        <div className="-mx-1 overflow-x-auto pb-1">
+          <div className="flex w-max gap-2 px-1">
+            {tabs.map((tab) => {
+              const active = activeDeckMode === tab.id;
 
-            return (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => {
-                  setActiveDeckMode(tab.id);
-                  if (tab.id !== "categories") {
-                    setSelectedRecipeKind(null);
-                  }
-                  setDeckIndex(0);
-                }}
-                className={`shrink-0 rounded-full px-4 py-2 text-sm font-semibold transition ${
-                  active
-                    ? "bg-slate-900 text-white"
-                    : "bg-white text-slate-600 ring-1 ring-slate-200"
-                }`}
-              >
-                {tab.label} · {tab.count}
-              </button>
-            );
-          })}
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => {
+                    setActiveDeckMode(tab.id);
+                    if (tab.id !== "categories") {
+                      setSelectedRecipeKind(null);
+                    }
+                    setDeckIndex(0);
+                  }}
+                  className={`shrink-0 rounded-full px-4 py-3 text-sm font-black shadow-sm transition active:scale-[0.98] ${
+                    active
+                      ? "bg-slate-950 text-white ring-1 ring-slate-950"
+                      : "bg-white text-slate-700 ring-1 ring-slate-100"
+                  }`}
+                >
+                  {tab.label} <span className="ml-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">{tab.count}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {activeDeckMode === "categories" ? (
@@ -2825,10 +2846,10 @@ export default function AiPage() {
                     setSelectedRecipeKind(kind);
                     setDeckIndex(0);
                   }}
-                  className={`shrink-0 rounded-full px-4 py-2 text-sm font-semibold transition ${
+                  className={`shrink-0 rounded-full px-4 py-2.5 text-sm font-black shadow-sm transition active:scale-[0.98] ${
                     active
-                      ? "bg-green-500 text-white"
-                      : "bg-white text-slate-600 ring-1 ring-slate-200"
+                      ? "bg-green-500 text-white ring-1 ring-green-500"
+                      : "bg-white text-slate-600 ring-1 ring-slate-100"
                   }`}
                 >
                   {recipeKindLabels[kind]} · {count}
@@ -2881,118 +2902,146 @@ export default function AiPage() {
             <p className="mt-2 text-sm text-slate-500">
               Добавь продукты в “Есть дома” или попробуй другой режим.
             </p>
-            <button
-              type="button"
-              onClick={refreshRecipesManually}
-              disabled={matchingRecipes || loadingSuggested}
-              className="mt-4 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
-            >
-              Обновить подбор
-            </button>
+
           </div>
         ) : (
           <>
-            <div className="relative min-h-[460px] overflow-hidden">
+            <div className="relative min-h-[500px] overflow-hidden rounded-[34px] bg-gradient-to-b from-slate-200 to-slate-100 p-2">
+              <div className="pointer-events-none absolute inset-x-8 top-4 h-24 rounded-full bg-white/70 blur-2xl" />
+
               <AnimatePresence mode="wait">
                 <motion.div
                   key={`${activeDeckMode}_${deckIndex}_${recipe.id}`}
                   drag
                   dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
-                  dragElastic={0.18}
+                  dragElastic={0.2}
                   onDragEnd={(_, info) => handleRecipeDragEnd(result, info)}
-                  initial={{ opacity: 0, y: 24, scale: 0.96 }}
+                  initial={{ opacity: 0, y: 18, scale: 0.97 }}
                   animate={{ opacity: 1, y: 0, scale: 1, rotate: 0 }}
                   exit={{
                     opacity: 0,
                     x:
                       swipeDirection === "right"
-                        ? 130
+                        ? 150
                         : swipeDirection === "left"
-                          ? -130
+                          ? -150
                           : 0,
-                    y: swipeDirection === "up" ? -120 : 24,
+                    y: swipeDirection === "up" ? 130 : 18,
                     rotate:
                       swipeDirection === "right"
-                        ? 8
+                        ? 7
                         : swipeDirection === "left"
-                          ? -8
+                          ? -7
                           : 0,
-                    scale: 0.96,
+                    scale: 0.97,
                   }}
-                  transition={{ duration: 0.22 }}
-                  className="absolute inset-x-0 top-0 cursor-grab active:cursor-grabbing"
+                  transition={{ duration: 0.18 }}
+                  className="absolute inset-x-2 top-2 cursor-grab active:cursor-grabbing"
                 >
-                  <div className="overflow-hidden rounded-[28px] bg-slate-900 p-5 text-white shadow-sm">
+                  <div
+                    className={`overflow-hidden rounded-[30px] p-5 text-white shadow-xl ${
+                      result.score === 100
+                        ? "bg-gradient-to-br from-emerald-600 via-slate-900 to-slate-950"
+                        : result.score >= 70
+                          ? "bg-gradient-to-br from-orange-500 via-slate-900 to-slate-950"
+                          : "bg-gradient-to-br from-slate-700 via-slate-900 to-slate-950"
+                    }`}
+                  >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-green-200">
-                          {recipe.category || "Рецепт"}
-                        </p>
-                        <h2 className="mt-2 text-3xl font-bold leading-tight break-words">
+                        <div className="inline-flex max-w-full items-center gap-2 rounded-full bg-white/12 px-3 py-1 text-xs font-semibold text-white/85 ring-1 ring-white/10">
+                          <span>🍽</span>
+                          <span className="truncate">{recipe.category || "Рецепт"}</span>
+                        </div>
+
+                        <h2 className="mt-4 line-clamp-4 break-words text-[32px] font-black leading-[1.04] tracking-tight">
                           {recipe.title}
                         </h2>
                       </div>
 
-                      <div className="shrink-0 rounded-2xl bg-white/10 px-3 py-2 text-center">
-                        <div className="text-xs text-green-100">готовность</div>
-                        <div className="text-xl font-bold">{result.score}%</div>
+                      <div className="shrink-0 rounded-3xl bg-white/12 px-3 py-3 text-center ring-1 ring-white/10">
+                        <div className="text-[10px] font-bold uppercase tracking-wide text-white/60">
+                          готово
+                        </div>
+                        <div className="text-2xl font-black">{result.score}%</div>
                       </div>
                     </div>
 
-                    <div className="mt-5 grid grid-cols-[0.85fr_0.85fr_1.3fr] gap-2 text-center">
-                      <div className="rounded-2xl bg-white/10 px-2 py-3">
-                        <div className="text-xl font-bold">
+                    <div className="mt-5 h-2 overflow-hidden rounded-full bg-white/15">
+                      <div
+                        className="h-full rounded-full bg-white transition-all"
+                        style={{ width: `${result.score}%` }}
+                      />
+                    </div>
+
+                    <div className="mt-5 grid grid-cols-3 gap-2 text-center">
+                      <div className="rounded-3xl bg-white/12 px-2 py-3 ring-1 ring-white/10">
+                        <div className="text-2xl font-black">
                           {result.haveIds.length}
                         </div>
-                        <div className="text-xs text-slate-300">есть дома</div>
+                        <div className="text-[11px] font-medium text-white/60">
+                          есть дома
+                        </div>
                       </div>
 
-                      <div className="rounded-2xl bg-white/10 px-2 py-3">
-                        <div className="text-xl font-bold">
+                      <div className="rounded-3xl bg-white/12 px-2 py-3 ring-1 ring-white/10">
+                        <div className="text-2xl font-black">
                           {result.missingIds.length}
                         </div>
-                        <div className="text-xs text-slate-300">не хватает</div>
+                        <div className="text-[11px] font-medium text-white/60">
+                          не хватает
+                        </div>
                       </div>
 
-                      <div className="rounded-2xl bg-white/10 px-2 py-3">
-                        <div className="text-sm font-bold leading-tight">
+                      <div className="rounded-3xl bg-white/12 px-2 py-3 ring-1 ring-white/10">
+                        <div className="line-clamp-1 text-sm font-black leading-tight">
                           {getRecipeTimeLabel(recipe)}
                         </div>
-                        <div className="text-xs text-slate-300">время</div>
+                        <div className="text-[11px] font-medium text-white/60">время</div>
                       </div>
                     </div>
 
-                    {result.missingIds.length > 0 ? (
-                      <div className="mt-5 rounded-2xl bg-white/10 px-4 py-3 text-sm text-slate-100">
-                        Не хватает:{" "}
-                        {result.missingIds
-                          .slice(0, 4)
-                          .map((id) => getProductLabel(id))
-                          .join(", ")}
-                        {result.missingIds.length > 4 ? "..." : ""}
-                      </div>
-                    ) : (
-                      <div className="mt-5 rounded-2xl bg-green-400/20 px-4 py-3 text-sm font-medium text-green-100">
-                        Всё нужное уже есть дома.
-                      </div>
-                    )}
+                    <div className="mt-5 rounded-3xl bg-white/10 p-4 ring-1 ring-white/10">
+                      {result.missingIds.length > 0 ? (
+                        <>
+                          <p className="text-xs font-bold uppercase tracking-wide text-orange-100/80">
+                            Нужно докупить
+                          </p>
+                          <p className="mt-2 line-clamp-2 text-sm leading-6 text-white/90">
+                            {result.missingIds
+                              .slice(0, 4)
+                              .map((id) => getProductLabel(id))
+                              .join(", ")}
+                            {result.missingIds.length > 4 ? "..." : ""}
+                          </p>
+                        </>
+                      ) : (
+                        <p className="text-sm font-bold leading-6 text-green-100">
+                          ✅ Всё нужное уже есть дома. Можно готовить без покупок.
+                        </p>
+                      )}
+                    </div>
 
                     {recipe.description ? (
-                      <p className="mt-5 line-clamp-3 text-sm leading-6 text-slate-300">
+                      <p className="mt-4 line-clamp-3 text-sm leading-6 text-white/70">
                         {recipe.description}
                       </p>
                     ) : null}
 
-                    <div className="mt-6 grid grid-cols-[1fr_auto] gap-2">
+                    <div className="mt-5 rounded-3xl bg-black/15 px-4 py-3 text-center text-xs font-bold text-white/70 ring-1 ring-white/10">
+                      ← назад · ↓ в избранное · → дальше
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-[1fr_1fr] gap-2">
                       <button
                         type="button"
                         onClick={() => {
                           setSelectedRecipe(result);
                           setMessage("");
                         }}
-                        className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-slate-900"
+                        className="rounded-2xl bg-white px-4 py-3 text-sm font-black text-slate-900 shadow-sm active:scale-[0.98]"
                       >
-                        Открыть рецепт
+                        Открыть
                       </button>
 
                       <button
@@ -3003,7 +3052,7 @@ export default function AiPage() {
                             : startCooking(result)
                         }
                         disabled={addingRecipeId !== null}
-                        className="rounded-2xl bg-green-500 px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
+                        className="rounded-2xl bg-green-500 px-4 py-3 text-sm font-black text-white shadow-sm disabled:opacity-60 active:scale-[0.98]"
                       >
                         {result.missingIds.length > 0 ? "В покупки" : "Готовить"}
                       </button>
@@ -3013,51 +3062,7 @@ export default function AiPage() {
               </AnimatePresence>
             </div>
 
-            <div className="grid grid-cols-3 gap-2">
-              <button
-                type="button"
-                onClick={() => showNextDeckRecipe("left")}
-                className="rounded-2xl bg-white px-3 py-3 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-slate-100"
-              >
-                Пропустить
-              </button>
 
-              <button
-                type="button"
-                onClick={() => {
-                  void toggleFavoriteRecipe(recipe);
-                  showNextDeckRecipe("right");
-                }}
-                className="rounded-2xl bg-white px-3 py-3 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-slate-100"
-              >
-                {isFavoriteRecipe(recipe.id) ? "В избранном" : "В избранное"}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  if (result.missingIds.length > 0) {
-                    void addMissingToShopping(result);
-                  } else {
-                    void startCooking(result);
-                  }
-                  showNextDeckRecipe("up");
-                }}
-                disabled={addingRecipeId !== null}
-                className="rounded-2xl bg-slate-900 px-3 py-3 text-sm font-semibold text-white disabled:opacity-60"
-              >
-                {result.missingIds.length > 0 ? "В покупки" : "Готовить"}
-              </button>
-            </div>
-
-            <button
-              type="button"
-              onClick={refreshRecipesManually}
-              disabled={matchingRecipes || loadingSuggested}
-              className="w-full rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-slate-100 disabled:opacity-60"
-            >
-              Обновить подбор
-            </button>
           </>
         )}
           </>
@@ -3223,11 +3228,6 @@ export default function AiPage() {
             className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base outline-none focus:border-blue-400"
           />
 
-          {!isSearching && recipesNeedRefresh && !matchingRecipes && !loadingSuggested && (
-            <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800 ring-1 ring-amber-100">
-              🔄 Подбор рецептов не обновлён. Нажми “Обновить подбор”, когда нужно пересчитать по продуктам дома.
-            </div>
-          )}
 
           {isSearching && (
             <ToggleBlock
