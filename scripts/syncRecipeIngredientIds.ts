@@ -34,7 +34,7 @@ type Recipe = {
   description?: string;
   ingredientIds?: string[];
   optionalIngredientIds?: string[];
-  [key: string]: any;
+  [key: string]: unknown;
 };
 
 type CanonicalItem = {

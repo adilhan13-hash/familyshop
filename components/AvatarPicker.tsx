@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, useEffect, useState } from "react";
+import { ChangeEvent, useState } from "react";
 
 type AvatarPickerProps = {
   currentPhoto?: string;
@@ -59,13 +59,8 @@ export default function AvatarPicker({
   userName,
   onSave,
 }: AvatarPickerProps) {
-  const [preview, setPreview] = useState(currentPhoto || "");
   const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    setPreview(currentPhoto || "");
-  }, [currentPhoto]);
 
   async function handleChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -89,7 +84,6 @@ export default function AvatarPicker({
 
       const photoBase64 = await resizeAvatar(file);
 
-      setPreview(photoBase64);
       await onSave(photoBase64);
       setMessage("Аватар обновлён.");
     } catch (error) {
@@ -103,12 +97,15 @@ export default function AvatarPicker({
   return (
     <div className="flex items-center gap-4">
       <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-full bg-slate-100 text-3xl font-bold text-slate-500">
-        {preview ? (
-          <img
-            src={preview}
-            alt="Аватар"
-            className="h-full w-full object-cover"
-          />
+        {currentPhoto ? (
+          <>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={currentPhoto}
+              alt="Аватар"
+              className="h-full w-full object-cover"
+            />
+          </>
         ) : (
           <span>{getInitials(userName)}</span>
         )}

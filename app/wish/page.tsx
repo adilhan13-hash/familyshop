@@ -586,6 +586,7 @@ export default function WishPage() {
 
                   {imageBase64 ? (
                     <div className="overflow-hidden rounded-2xl bg-slate-100">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={imageBase64}
                         alt="Фото желания"
@@ -698,6 +699,7 @@ export default function WishPage() {
                           onClick={() => setOpenedImage(item.imageBase64)}
                           className="block h-52 w-full overflow-hidden bg-slate-100"
                         >
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
                           <img
                             src={item.imageBase64}
                             alt={item.title}
@@ -736,11 +738,14 @@ export default function WishPage() {
                         <div className="mt-4 flex items-center gap-3 rounded-2xl bg-white/70 p-3">
                           <div className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-slate-100 text-lg font-bold text-slate-500">
                             {item.ownerPhoto ? (
-                              <img
-                                src={item.ownerPhoto}
-                                alt={item.ownerName}
-                                className="h-full w-full object-cover"
-                              />
+                              <>
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={item.ownerPhoto}
+                                  alt={item.ownerName}
+                                  className="h-full w-full object-cover"
+                                />
+                              </>
                             ) : (
                               <span>
                                 {(item.ownerName || "П").slice(0, 1).toUpperCase()}

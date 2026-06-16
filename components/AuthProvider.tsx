@@ -65,6 +65,80 @@ function createFamilyId() {
   return `family_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+async function prepareUser(currentUser: User) {
+  const phoneNumber = currentUser.phoneNumber || "";
+  const userRef = doc(db, "users", currentUser.uid);
+  const userSnap = await getDoc(userRef);
+
+  if (userSnap.exists()) {
+    const data = userSnap.data();
+
+    return {
+      uid: currentUser.uid,
+      phone: data.phone || phoneNumber,
+      familyId: data.familyId,
+      displayName: data.displayName || "",
+      photoBase64: data.photoBase64 || "",
+    };
+  }
+
+  const oldFamilyQuery = query(
+    collection(db, "families"),
+    where("allowedPhones", "array-contains", phoneNumber),
+    limit(1)
+  );
+
+  const oldFamilySnapshot = await getDocs(oldFamilyQuery);
+
+  if (!oldFamilySnapshot.empty) {
+    const oldFamily = oldFamilySnapshot.docs[0];
+    const oldFamilyId = oldFamily.id;
+
+    await setDoc(userRef, {
+      phone: phoneNumber,
+      familyId: oldFamilyId,
+      displayName: "",
+      photoBase64: "",
+      createdAt: new Date(),
+    });
+
+    return {
+      uid: currentUser.uid,
+      phone: phoneNumber,
+      familyId: oldFamilyId,
+      displayName: "",
+      photoBase64: "",
+    };
+  }
+
+  const familyId = createFamilyId();
+  const familyRef = doc(db, "families", familyId);
+
+  await setDoc(familyRef, {
+    ownerUid: currentUser.uid,
+    ownerPhone: phoneNumber,
+    members: [phoneNumber],
+    allowedPhones: [phoneNumber],
+    createdAt: new Date(),
+  });
+
+  await setDoc(userRef, {
+    phone: phoneNumber,
+    familyId,
+    displayName: "",
+    photoBase64: "",
+    createdAt: new Date(),
+  });
+
+  return {
+    uid: currentUser.uid,
+    phone: phoneNumber,
+    familyId,
+    displayName: "",
+    photoBase64: "",
+  };
+}
+
 export default function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(null);
   const [appUser, setAppUser] = useState<FamilyShopUser | null>(null);
@@ -100,80 +174,6 @@ export default function AuthProvider({ children }: AuthProviderProps) {
 
     const preparedUser = await prepareUser(user);
     setAppUser(preparedUser);
-  }
-
-  async function prepareUser(currentUser: User) {
-    const phoneNumber = currentUser.phoneNumber || "";
-    const userRef = doc(db, "users", currentUser.uid);
-    const userSnap = await getDoc(userRef);
-
-    if (userSnap.exists()) {
-      const data = userSnap.data();
-
-      return {
-        uid: currentUser.uid,
-        phone: data.phone || phoneNumber,
-        familyId: data.familyId,
-        displayName: data.displayName || "",
-        photoBase64: data.photoBase64 || "",
-      };
-    }
-
-    const oldFamilyQuery = query(
-      collection(db, "families"),
-      where("allowedPhones", "array-contains", phoneNumber),
-      limit(1)
-    );
-
-    const oldFamilySnapshot = await getDocs(oldFamilyQuery);
-
-    if (!oldFamilySnapshot.empty) {
-      const oldFamily = oldFamilySnapshot.docs[0];
-      const oldFamilyId = oldFamily.id;
-
-      await setDoc(userRef, {
-        phone: phoneNumber,
-        familyId: oldFamilyId,
-        displayName: "",
-        photoBase64: "",
-        createdAt: new Date(),
-      });
-
-      return {
-        uid: currentUser.uid,
-        phone: phoneNumber,
-        familyId: oldFamilyId,
-        displayName: "",
-        photoBase64: "",
-      };
-    }
-
-    const familyId = createFamilyId();
-    const familyRef = doc(db, "families", familyId);
-
-    await setDoc(familyRef, {
-      ownerUid: currentUser.uid,
-      ownerPhone: phoneNumber,
-      members: [phoneNumber],
-      allowedPhones: [phoneNumber],
-      createdAt: new Date(),
-    });
-
-    await setDoc(userRef, {
-      phone: phoneNumber,
-      familyId,
-      displayName: "",
-      photoBase64: "",
-      createdAt: new Date(),
-    });
-
-    return {
-      uid: currentUser.uid,
-      phone: phoneNumber,
-      familyId,
-      displayName: "",
-      photoBase64: "",
-    };
   }
 
   async function saveDisplayName(displayName: string) {

@@ -219,11 +219,14 @@ export default function HomePage() {
                   >
                     <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full bg-white text-lg font-bold text-slate-500">
                       {item.userPhoto ? (
-                        <img
-                          src={item.userPhoto}
-                          alt={item.userName}
-                          className="h-full w-full object-cover"
-                        />
+                        <>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img
+                            src={item.userPhoto}
+                            alt={item.userName}
+                            className="h-full w-full object-cover"
+                          />
+                        </>
                       ) : (
                         <span>{getInitials(item.userName)}</span>
                       )}

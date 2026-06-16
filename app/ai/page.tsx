@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import type { PanInfo } from "framer-motion";
 import BottomNav from "../../components/BottomNav";
 import { useFamilyAuth } from "../../components/AuthProvider";
 import { db } from "../../lib/firebase";
@@ -117,6 +118,35 @@ type MealPlan = {
   score: number;
   missingIds: string[];
 };
+
+type RecipeKind =
+  | "breakfast"
+  | "salad"
+  | "soup"
+  | "main"
+  | "side"
+  | "baking"
+  | "dessert"
+  | "drink"
+  | "other";
+
+type CookDeckMode = "ready" | "kids" | "categories" | "favorites";
+
+const recipeKindLabels: Record<RecipeKind, string> = {
+  breakfast: "Завтраки",
+  salad: "Салаты",
+  soup: "Первое",
+  main: "Второе",
+  side: "Гарниры",
+  baking: "Выпечка",
+  dessert: "Десерты",
+  drink: "Напитки",
+  other: "Другое",
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
 
 function normalizeText(value: string) {
   return String(value || "")
@@ -407,28 +437,25 @@ export default function AiPage() {
   const [addingRecipeId, setAddingRecipeId] = useState<string | null>(null);
   const [addingMealPlanId, setAddingMealPlanId] = useState<string | null>(null);
 
-  const [showMealPlan, setShowMealPlan] = useState(false);
+  const [showMealPlan, setShowMealPlan] = useState(true);
   const [mealRecipeOverrides, setMealRecipeOverrides] = useState<
     Record<string, string>
   >({});
-  const [showCooking, setShowCooking] = useState(false);
-  const [showSuggested, setShowSuggested] = useState(true);
+  const [showCooking, setShowCooking] = useState(true);
   const [showSearch, setShowSearch] = useState(false);
   const [showFavorites, setShowFavorites] = useState(false);
   const [showQuick, setShowQuick] = useState(false);
-  const [showQuickBreakfast, setShowQuickBreakfast] = useState(false);
-  const [showQuickSalads, setShowQuickSalads] = useState(false);
-  const [showQuickSoups, setShowQuickSoups] = useState(false);
-  const [showQuickMains, setShowQuickMains] = useState(false);
-  const [showQuickSides, setShowQuickSides] = useState(false);
-  const [showQuickBaking, setShowQuickBaking] = useState(false);
   const [showKids, setShowKids] = useState(false);
-  const [showHoliday, setShowHoliday] = useState(false);
-  const [showFridge, setShowFridge] = useState(false);
+  const [activeDeckMode, setActiveDeckMode] = useState<CookDeckMode>("ready");
+  const [selectedRecipeKind, setSelectedRecipeKind] =
+    useState<RecipeKind | null>(null);
+  const [deckIndex, setDeckIndex] = useState(0);
+  const [swipeDirection, setSwipeDirection] = useState<
+    "left" | "right" | "up" | "next"
+  >("next");
   const [recipeRefreshSeed, setRecipeRefreshSeed] = useState(() => Date.now());
-
-  const [addedAnimation, setAddedAnimation] = useState(false);
-  const [cookingAnimation, setCookingAnimation] = useState(false);
+  const [, setAddedAnimation] = useState(false);
+  const [, setCookingAnimation] = useState(false);
 
   useEffect(() => {
     if (!message) return;
@@ -438,7 +465,8 @@ export default function AiPage() {
   }, [message]);
 
   function refreshRecipesManually() {
-    setRecipeRefreshSeed(Date.now() + Math.floor(Math.random() * 1000000));
+    setDeckIndex((prev) => prev + 1);
+    setRecipeRefreshSeed((prev) => prev + 1);
     setMealRecipeOverrides({});
     runRecipeMatching();
   }
@@ -740,6 +768,8 @@ export default function AiPage() {
 
     if (score <= 0) return 0;
 
+    // buildMatch is a route-local function declaration used for scoring.
+    // eslint-disable-next-line react-hooks/immutability
     const match = buildMatch(recipe);
     score += Math.min(match.score, 100);
     score += Math.min(match.haveIds.length * 8, 80);
@@ -754,11 +784,10 @@ export default function AiPage() {
     return Math.max(0, score);
   }
 
-  function getRecipeKind(recipe: Recipe) {
+  function getRecipeKind(recipe: Recipe): RecipeKind {
     if (!isRealDish(recipe)) return "other";
 
     const titleCategory = getRecipeTitleCategoryText(recipe);
-    const title = normalizeText(recipe.title || "");
     const allText = getRecipeSearchText(recipe);
     const ingredientText = getRecipeIngredientText(recipe);
 
@@ -1019,54 +1048,6 @@ export default function AiPage() {
     return false;
   }
 
-  function isQuickBreakfastRecipe(recipe: Recipe) {
-    return isQuickRecipe(recipe) && getQuickRecipeKind(recipe) === "breakfast";
-  }
-
-  function isQuickSaladRecipe(recipe: Recipe) {
-    return isQuickRecipe(recipe) && getQuickRecipeKind(recipe) === "salad";
-  }
-
-  function isQuickSoupRecipe(recipe: Recipe) {
-    return isQuickRecipe(recipe) && getQuickRecipeKind(recipe) === "soup";
-  }
-
-  function isQuickMainRecipe(recipe: Recipe) {
-    return isQuickRecipe(recipe) && getQuickRecipeKind(recipe) === "main";
-  }
-
-  function isQuickSideRecipe(recipe: Recipe) {
-    return isQuickRecipe(recipe) && getQuickRecipeKind(recipe) === "side";
-  }
-
-  function isQuickBakingRecipe(recipe: Recipe) {
-    return isQuickRecipe(recipe) && getQuickRecipeKind(recipe) === "baking";
-  }
-
-  function isLooseBreakfastRecipe(recipe: Recipe) {
-    return isRealDish(recipe) && getRecipeKind(recipe) === "breakfast";
-  }
-
-  function isLooseSaladRecipe(recipe: Recipe) {
-    return isRealDish(recipe) && getRecipeKind(recipe) === "salad";
-  }
-
-  function isLooseSoupRecipe(recipe: Recipe) {
-    return isRealDish(recipe) && getRecipeKind(recipe) === "soup";
-  }
-
-  function isLooseMainRecipe(recipe: Recipe) {
-    return isRealDish(recipe) && getRecipeKind(recipe) === "main";
-  }
-
-  function isLooseSideRecipe(recipe: Recipe) {
-    return isRealDish(recipe) && getRecipeKind(recipe) === "side";
-  }
-
-  function isLooseBakingRecipe(recipe: Recipe) {
-    return isRealDish(recipe) && getRecipeKind(recipe) === "baking";
-  }
-
   function isKidsRecipe(recipe: Recipe) {
     if (!isRealDish(recipe)) return false;
 
@@ -1211,16 +1192,31 @@ export default function AiPage() {
         const rawProducts = await response.json();
 
         const items: Product[] = Array.isArray(rawProducts)
-          ? rawProducts.map((product: any, index: number) => ({
-              id: product.id || `product_${index}`,
-              icon: product.icon || "🛒",
-              name: product.name || product.id || `Товар ${index + 1}`,
-              category: product.category || "Другое",
-              ingredientId: product.ingredientId,
-              aliases: product.aliases || [],
-              search: product.search || [],
-              mergedIds: product.mergedIds || [],
-            }))
+          ? rawProducts.map((product: unknown, index: number) => {
+              const rawProduct = isRecord(product) ? product : {};
+              const id = String(rawProduct.id || `product_${index}`);
+
+              return {
+                id,
+                icon: String(rawProduct.icon || "🛒"),
+                name: String(
+                  rawProduct.name || rawProduct.id || `Товар ${index + 1}`,
+                ),
+                category: String(rawProduct.category || "Другое"),
+                ingredientId: rawProduct.ingredientId
+                  ? String(rawProduct.ingredientId)
+                  : undefined,
+                aliases: Array.isArray(rawProduct.aliases)
+                  ? rawProduct.aliases.map(String)
+                  : [],
+                search: Array.isArray(rawProduct.search)
+                  ? rawProduct.search.map(String)
+                  : [],
+                mergedIds: Array.isArray(rawProduct.mergedIds)
+                  ? rawProduct.mergedIds.map(String)
+                  : [],
+              };
+            })
           : [];
 
         if (active) {
@@ -1292,42 +1288,74 @@ export default function AiPage() {
         const rawRecipes = await response.json();
 
         const items: Recipe[] = Array.isArray(rawRecipes)
-          ? rawRecipes.map((recipe: any, index: number) => {
-              const title = recipe.title || recipe.name || "Без названия";
+          ? rawRecipes.map((recipe: unknown, index: number) => {
+              const rawRecipe = isRecord(recipe) ? recipe : {};
+              const title = String(
+                rawRecipe.title || rawRecipe.name || "Без названия",
+              );
+              const tags = Array.isArray(rawRecipe.tags)
+                ? (rawRecipe.tags as RecipeTag[])
+                : [];
+              const rawIngredients = Array.isArray(rawRecipe.rawIngredients)
+                ? (rawRecipe.rawIngredients as RawIngredient[])
+                : [];
 
               return {
-                id: recipe.id || recipe.slug || `recipe_${index}`,
+                id: String(rawRecipe.id || rawRecipe.slug || `recipe_${index}`),
                 title,
-                category: recipe.category || "Рецепт",
-                categorySlug: recipe.categorySlug,
-                cuisine: recipe.cuisine,
-                difficulty: recipe.difficulty,
-                cookingTime: recipe.cookingTime ?? null,
-                cookingTimeText: recipe.cookingTimeText || null,
-                prepareTimeText: recipe.prepareTimeText || null,
-                time: recipe.time,
-                description: recipe.description,
-                note: recipe.note,
-                poster: recipe.poster || null,
-                video: recipe.video || null,
-                tags: Array.isArray(recipe.tags) ? recipe.tags : [],
-                popular: Boolean(recipe.popular),
-                familyFriendly: Boolean(recipe.familyFriendly),
-                rawIngredients: Array.isArray(recipe.rawIngredients)
-                  ? recipe.rawIngredients
+                category: String(rawRecipe.category || "Рецепт"),
+                categorySlug: rawRecipe.categorySlug
+                  ? String(rawRecipe.categorySlug)
+                  : undefined,
+                cuisine: rawRecipe.cuisine ? String(rawRecipe.cuisine) : undefined,
+                difficulty: rawRecipe.difficulty
+                  ? String(rawRecipe.difficulty)
+                  : undefined,
+                cookingTime:
+                  typeof rawRecipe.cookingTime === "number"
+                    ? rawRecipe.cookingTime
+                    : null,
+                cookingTimeText: rawRecipe.cookingTimeText
+                  ? String(rawRecipe.cookingTimeText)
+                  : null,
+                prepareTimeText: rawRecipe.prepareTimeText
+                  ? String(rawRecipe.prepareTimeText)
+                  : null,
+                time: rawRecipe.time ? String(rawRecipe.time) : undefined,
+                description: rawRecipe.description
+                  ? String(rawRecipe.description)
+                  : undefined,
+                note: rawRecipe.note ? String(rawRecipe.note) : undefined,
+                poster: rawRecipe.poster ? String(rawRecipe.poster) : null,
+                video: rawRecipe.video ? String(rawRecipe.video) : null,
+                tags,
+                popular: Boolean(rawRecipe.popular),
+                familyFriendly: Boolean(rawRecipe.familyFriendly),
+                rawIngredients,
+                ingredientIds: Array.isArray(rawRecipe.ingredientIds)
+                  ? rawRecipe.ingredientIds.map(String)
                   : [],
-                ingredientIds: recipe.ingredientIds || [],
-                optionalIngredientIds: recipe.optionalIngredientIds || [],
-                steps: recipe.steps || [],
-                stepImages: Array.isArray(recipe.stepImages)
-                  ? recipe.stepImages
+                optionalIngredientIds: Array.isArray(
+                  rawRecipe.optionalIngredientIds,
+                )
+                  ? rawRecipe.optionalIngredientIds.map(String)
                   : [],
-                source: recipe.source,
-                searchTitle: recipe.searchTitle || normalizeText(title),
+                steps: Array.isArray(rawRecipe.steps)
+                  ? rawRecipe.steps.map(String)
+                  : [],
+                stepImages: Array.isArray(rawRecipe.stepImages)
+                  ? rawRecipe.stepImages.map(String)
+                  : [],
+                source: rawRecipe.source ? String(rawRecipe.source) : undefined,
+                searchTitle: rawRecipe.searchTitle
+                  ? String(rawRecipe.searchTitle)
+                  : normalizeText(title),
                 searchText: normalizeText(
-                  `${title} ${recipe.searchTitle || ""} ${recipe.category || ""} ${
-                    recipe.categorySlug || ""
-                  } ${recipe.cuisine || ""} ${recipe.difficulty || ""} ${Array.isArray(recipe.tags) ? recipe.tags.map((tag: RecipeTag) => `${tag.name || ""} ${tag.slug || ""}`).join(" ") : ""} ${Array.isArray(recipe.rawIngredients) ? recipe.rawIngredients.map((ingredient: RawIngredient) => `${ingredient.name || ""} ${ingredient.ingredientId || ""} ${ingredient.quantity || ""}`).join(" ") : ""}`,
+                  `${title} ${rawRecipe.searchTitle || ""} ${
+                    rawRecipe.category || ""
+                  } ${rawRecipe.categorySlug || ""} ${rawRecipe.cuisine || ""} ${
+                    rawRecipe.difficulty || ""
+                  } ${tags.map((tag) => `${tag.name || ""} ${tag.slug || ""}`).join(" ")} ${rawIngredients.map((ingredient) => `${ingredient.name || ""} ${ingredient.ingredientId || ""} ${ingredient.quantity || ""}`).join(" ")}`,
                 ),
               };
             })
@@ -1439,15 +1467,15 @@ export default function AiPage() {
   useEffect(() => {
     const searchText = normalizeText(search);
 
-    if (searchText.length < 2) {
-      setSearchRecipes([]);
-      setLoadingSearch(false);
-      return;
-    }
-
-    setLoadingSearch(true);
-
     const timer = setTimeout(() => {
+      if (searchText.length < 2) {
+        setSearchRecipes([]);
+        setLoadingSearch(false);
+        return;
+      }
+
+      setLoadingSearch(true);
+
       const items = suggestedRecipes
         .map((recipe) => ({
           recipe,
@@ -1467,6 +1495,8 @@ export default function AiPage() {
     }, 150);
 
     return () => clearTimeout(timer);
+    // Keep this tied to the source lists; scoring helpers are pure route-local logic.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, suggestedRecipes]);
 
   const fridgeIngredientIds = useMemo(() => {
@@ -1488,6 +1518,8 @@ export default function AiPage() {
     }
 
     return Array.from(new Set(ids));
+    // productsMap captures the catalog changes that affect comparable ids.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fridgeItems, productsMap]);
 
   const fridgeIngredientSet = useMemo(() => {
@@ -1577,53 +1609,61 @@ export default function AiPage() {
       return;
     }
 
-    try {
-      const saved = getSavedRecipeCache();
+    const timer = setTimeout(() => {
+      try {
+        const saved = getSavedRecipeCache();
 
-      if (!saved) {
+        if (!saved) {
+          setRecipesNeedRefresh(true);
+          setMatchingRecipes(false);
+          setMatchProgress(0);
+          return;
+        }
+
+        const parsed = JSON.parse(saved) as {
+          fridgeKey?: string;
+          recipeIds?: string[];
+        };
+
+        const recipeIds = Array.isArray(parsed.recipeIds)
+          ? parsed.recipeIds
+          : [];
+
+        if (recipeIds.length === 0) {
+          setRecipesNeedRefresh(true);
+          setMatchingRecipes(false);
+          setMatchProgress(0);
+          return;
+        }
+
+        const recipeOrder = new Map<string, number>();
+        recipeIds.forEach((id, index) => recipeOrder.set(id, index));
+
+        const cachedResults = suggestedRecipes
+          .filter((recipe) => recipeOrder.has(recipe.id))
+          .map(buildMatch)
+          .filter((result) => result.total > 0)
+          .sort((a, b) => {
+            const aIndex = recipeOrder.get(a.recipe.id) ?? 999999;
+            const bIndex = recipeOrder.get(b.recipe.id) ?? 999999;
+            return aIndex - bIndex;
+          });
+
+        setMatchedResultsState(cachedResults);
+        setRecipesNeedRefresh(parsed.fridgeKey !== fridgeSnapshotKey);
+        setMatchingRecipes(false);
+        setMatchProgress(0);
+      } catch (error) {
+        console.warn("AI cached recipes load warning", error);
         setRecipesNeedRefresh(true);
         setMatchingRecipes(false);
         setMatchProgress(0);
-        return;
       }
+    }, 0);
 
-      const parsed = JSON.parse(saved) as {
-        fridgeKey?: string;
-        recipeIds?: string[];
-      };
-
-      const recipeIds = Array.isArray(parsed.recipeIds) ? parsed.recipeIds : [];
-
-      if (recipeIds.length === 0) {
-        setRecipesNeedRefresh(true);
-        setMatchingRecipes(false);
-        setMatchProgress(0);
-        return;
-      }
-
-      const recipeOrder = new Map<string, number>();
-      recipeIds.forEach((id, index) => recipeOrder.set(id, index));
-
-      const cachedResults = suggestedRecipes
-        .filter((recipe) => recipeOrder.has(recipe.id))
-        .map(buildMatch)
-        .filter((result) => result.total > 0)
-        .sort((a, b) => {
-          const aIndex = recipeOrder.get(a.recipe.id) ?? 999999;
-          const bIndex = recipeOrder.get(b.recipe.id) ?? 999999;
-          return aIndex - bIndex;
-        });
-
-      setMatchedResultsState(cachedResults);
-      setRecipesNeedRefresh(parsed.fridgeKey !== fridgeSnapshotKey);
-      setMatchingRecipes(false);
-      setMatchProgress(0);
-    } catch (error) {
-      console.warn("AI cached recipes load warning", error);
-      setRecipesNeedRefresh(true);
-      setMatchingRecipes(false);
-      setMatchProgress(0);
-    }
+    return () => clearTimeout(timer);
+    // Cache hydration intentionally follows data keys, not every helper identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     loadingProducts,
     loadingFridge,
@@ -1736,103 +1776,9 @@ export default function AiPage() {
       .slice(0, 7 - perfectResults.length);
 
     return [...perfectResults, ...almostResults];
+    // isRealDish is pure route-local filtering logic.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allMatchedResults]);
-
-  const quickBreakfastResults = useMemo(() => {
-    const strictResults = sectionResults(
-      (recipe) => isQuickBreakfastRecipe(recipe),
-      7,
-      "quick_breakfast",
-    );
-
-    return strictResults.length > 0
-      ? strictResults
-      : sectionResults(
-          (recipe) => isLooseBreakfastRecipe(recipe),
-          7,
-          "quick_breakfast_loose",
-        );
-  }, [allMatchedResults, recipeRefreshSeed]);
-
-  const quickSaladResults = useMemo(() => {
-    const strictResults = sectionResults(
-      (recipe) => isQuickSaladRecipe(recipe),
-      7,
-      "quick_salads",
-    );
-
-    return strictResults.length > 0
-      ? strictResults
-      : sectionResults(
-          (recipe) => isLooseSaladRecipe(recipe),
-          7,
-          "quick_salads_loose",
-        );
-  }, [allMatchedResults, recipeRefreshSeed]);
-
-  const quickSoupResults = useMemo(() => {
-    const strictResults = sectionResults(
-      (recipe) => isQuickSoupRecipe(recipe),
-      7,
-      "quick_soups",
-    );
-
-    return strictResults.length > 0
-      ? strictResults
-      : sectionResults(
-          (recipe) => isLooseSoupRecipe(recipe),
-          7,
-          "quick_soups_loose",
-        );
-  }, [allMatchedResults, recipeRefreshSeed]);
-
-  const quickMainResults = useMemo(() => {
-    const strictResults = sectionResults(
-      (recipe) => isQuickMainRecipe(recipe),
-      7,
-      "quick_mains",
-    );
-
-    return strictResults.length > 0
-      ? strictResults
-      : sectionResults(
-          (recipe) => isLooseMainRecipe(recipe),
-          7,
-          "quick_mains_loose",
-        );
-  }, [allMatchedResults, recipeRefreshSeed]);
-
-  const quickSideResults = useMemo(() => {
-    const strictResults = sectionResults(
-      (recipe) => isQuickSideRecipe(recipe),
-      7,
-      "quick_sides",
-    );
-
-    return strictResults.length > 0
-      ? strictResults
-      : sectionResults(
-          (recipe) => isLooseSideRecipe(recipe),
-          7,
-          "quick_sides_loose",
-        );
-  }, [allMatchedResults, recipeRefreshSeed]);
-
-  const quickBakingResults = useMemo(() => {
-    const strictResults = sectionResults(
-      (recipe) => isQuickBakingRecipe(recipe),
-      7,
-      "quick_baking",
-    );
-
-    return strictResults.length > 0
-      ? strictResults
-      : sectionResults(
-          (recipe) => isLooseBakingRecipe(recipe),
-          7,
-          "quick_baking_loose",
-        );
-  }, [allMatchedResults, recipeRefreshSeed]);
 
   const quickResults = useMemo(() => {
     const allowedKinds = new Set(["breakfast", "salad", "soup", "main"]);
@@ -1882,14 +1828,20 @@ export default function AiPage() {
         return a.recipe.title.localeCompare(b.recipe.title, "ru");
       })
       .slice(0, 15);
+    // Recipe classifiers are pure route-local logic.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allMatchedResults, recipeRefreshSeed]);
 
   const kidsResults = useMemo(() => {
     return sectionResults((recipe) => isKidsRecipe(recipe), 7, "kids");
+    // sectionResults is pure route-local selection logic.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allMatchedResults, recipeRefreshSeed]);
 
   const holidayResults = useMemo(() => {
     return sectionResults((recipe) => isHolidayRecipe(recipe), 7, "holiday");
+    // sectionResults is pure route-local selection logic.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allMatchedResults, recipeRefreshSeed]);
 
   function recipeKind(result: MatchResult) {
@@ -2007,27 +1959,105 @@ export default function AiPage() {
         dinnerMain,
       ]),
     ].filter(Boolean) as MealPlan[];
+    // Meal planning depends on the matched list and user overrides.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allMatchedResults, mealRecipeOverrides]);
-
-  const recommendedMeal = useMemo(() => {
-    if (mealPlans.length === 0) return null;
-
-    return [...mealPlans].sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      if (a.missingIds.length !== b.missingIds.length) {
-        return a.missingIds.length - b.missingIds.length;
-      }
-      return b.items.length - a.items.length;
-    })[0];
-  }, [mealPlans]);
 
   const searchResults = useMemo(() => {
     return searchRecipes.map(buildMatch).slice(0, 20);
+    // buildMatch derives from fridgeIngredientIds through route-local state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchRecipes, fridgeIngredientIds]);
 
   const favoriteResults = useMemo(() => {
-    return favoriteRecipes.map(buildMatch).slice(0, 7);
+    return favoriteRecipes.map(buildMatch).slice(0, 50);
+    // buildMatch derives from fridgeIngredientIds through route-local state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [favoriteRecipes, fridgeIngredientIds]);
+
+  const readyResults = useMemo(() => {
+    return allMatchedResults.filter(
+      (result) =>
+        isRealDish(result.recipe) &&
+        result.total > 0 &&
+        result.missingIds.length === 0 &&
+        result.score === 100,
+    );
+    // isRealDish is pure route-local filtering logic.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allMatchedResults]);
+
+  const availableRecipeKinds = useMemo(() => {
+    const counts = new Map<RecipeKind, number>();
+
+    for (const result of allMatchedResults) {
+      if (!isRealDish(result.recipe) || result.score < 25) continue;
+
+      const kind = getRecipeKind(result.recipe) as RecipeKind;
+      counts.set(kind, (counts.get(kind) || 0) + 1);
+    }
+
+    return (
+      [
+        "breakfast",
+        "salad",
+        "soup",
+        "main",
+        "side",
+        "baking",
+        "dessert",
+        "drink",
+        "other",
+      ] as RecipeKind[]
+    )
+      .filter((kind) => (counts.get(kind) || 0) > 0)
+      .map((kind) => ({ kind, count: counts.get(kind) || 0 }));
+    // getRecipeKind/isRealDish are pure route-local classifiers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allMatchedResults]);
+
+  const deckResults = useMemo(() => {
+    const uniqueResults = new Map<string, MatchResult>();
+
+    const source =
+      activeDeckMode === "ready"
+        ? readyResults
+        : activeDeckMode === "kids"
+          ? kidsResults
+          : activeDeckMode === "categories" && selectedRecipeKind
+            ? sectionResults(
+                (recipe) => getRecipeKind(recipe) === selectedRecipeKind,
+                60,
+                `kind_${selectedRecipeKind}`,
+              )
+            : [];
+
+    for (const result of source) {
+      uniqueResults.set(result.recipe.id, result);
+    }
+
+    return Array.from(uniqueResults.values()).sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const aRandom = seededNumber(
+        `${recipeRefreshSeed}_${activeDeckMode}_${selectedRecipeKind || "none"}_${a.recipe.id}`,
+      );
+      const bRandom = seededNumber(
+        `${recipeRefreshSeed}_${activeDeckMode}_${selectedRecipeKind || "none"}_${b.recipe.id}`,
+      );
+      return bRandom - aRandom;
+    });
+    // getRecipeKind and sectionResults are pure route-local selection logic.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeDeckMode,
+    kidsResults,
+    readyResults,
+    recipeRefreshSeed,
+    selectedRecipeKind,
+  ]);
+
+  const currentDeckResult =
+    deckResults.length > 0 ? deckResults[deckIndex % deckResults.length] : null;
 
   function getRecipeTime(recipe: Recipe) {
     if (recipe.cookingTimeText) return recipe.cookingTimeText;
@@ -2035,6 +2065,29 @@ export default function AiPage() {
     if (recipe.time) return recipe.time;
     if (recipe.cookingTime) return `${recipe.cookingTime} мин`;
     return "";
+  }
+
+  function getEstimatedRecipeTime(recipe: Recipe) {
+    const kind = getRecipeKind(recipe);
+    const stepsCount = recipe.steps?.length || 0;
+
+    if (kind === "drink") return "10-15 мин";
+    if (kind === "salad") return "15-25 мин";
+    if (kind === "breakfast") return "20-35 мин";
+    if (kind === "side") return "25-40 мин";
+    if (kind === "soup") return "45-75 мин";
+    if (kind === "baking") return "40-90 мин";
+    if (kind === "main") return "35-60 мин";
+
+    if (stepsCount <= 3) return "15-25 мин";
+    if (stepsCount <= 6) return "25-40 мин";
+    if (stepsCount <= 10) return "40-60 мин";
+
+    return "45-75 мин";
+  }
+
+  function getRecipeTimeLabel(recipe: Recipe) {
+    return getRecipeTime(recipe) || `≈ ${getEstimatedRecipeTime(recipe)}`;
   }
 
   function isFavoriteRecipe(recipeId: string) {
@@ -2066,6 +2119,30 @@ export default function AiPage() {
 
     setSelectedRecipe(buildMatch(recipe));
     setMessage("");
+  }
+
+  function showNextDeckRecipe(direction: "left" | "right" | "up" | "next") {
+    setSwipeDirection(direction);
+    setRecipeRefreshSeed((prev) => prev + 1);
+    setDeckIndex((prev) => (deckResults.length > 0 ? prev + 1 : 0));
+  }
+
+  function handleRecipeDragEnd(result: MatchResult, info: PanInfo) {
+    if (info.offset.x > 90) {
+      void toggleFavoriteRecipe(result.recipe);
+      showNextDeckRecipe("right");
+      return;
+    }
+
+    if (info.offset.x < -90) {
+      showNextDeckRecipe("left");
+      return;
+    }
+
+    if (info.offset.y < -110) {
+      void startCooking(result);
+      showNextDeckRecipe("up");
+    }
   }
 
   async function toggleFavoriteRecipe(recipe: Recipe) {
@@ -2109,7 +2186,7 @@ export default function AiPage() {
         recipeId: result.recipe.id,
         title: result.recipe.title,
         category: result.recipe.category || "Рецепт",
-        cookingTime: getRecipeTime(result.recipe),
+        cookingTime: getRecipeTimeLabel(result.recipe),
         score: result.score,
         userId: appUser?.uid || "unknown",
         userName: appUser?.displayName || "Без имени",
@@ -2280,7 +2357,7 @@ export default function AiPage() {
         recipeId: item.recipe.id,
         title: item.recipe.title,
         category: item.recipe.category || "Рецепт",
-        cookingTime: getRecipeTime(item.recipe),
+        cookingTime: getRecipeTimeLabel(item.recipe),
         score: item.score,
         mealPlanId: plan.id,
         mealPlanTitle: plan.title,
@@ -2378,7 +2455,7 @@ export default function AiPage() {
             recipeId: item.recipe.id,
             title: item.recipe.title,
             category: item.recipe.category || "Рецепт",
-            cookingTime: getRecipeTime(item.recipe),
+            cookingTime: getRecipeTimeLabel(item.recipe),
             score: item.score,
             mealPlanId: plan.id,
             mealPlanTitle: plan.title,
@@ -2609,7 +2686,7 @@ export default function AiPage() {
   function RecipeCard({ result }: { result: MatchResult }) {
     const recipe = result.recipe;
     const favorite = isFavoriteRecipe(recipe.id);
-    const recipeTime = getRecipeTime(recipe);
+    const recipeTime = getRecipeTimeLabel(recipe);
     const statusText =
       result.missingIds.length > 0
         ? `Не хватает: ${result.missingIds.length}`
@@ -2688,7 +2765,308 @@ export default function AiPage() {
     );
   }
 
-  function RecipeListBlock({
+  function renderSwipeRecipeDeck() {
+    const result = currentDeckResult;
+    const recipe = result?.recipe;
+    const tabs: Array<{
+      id: CookDeckMode;
+      label: string;
+      count: number | string;
+    }> = [
+      { id: "ready", label: "Можно", count: readyResults.length || "—" },
+      { id: "kids", label: "Детское", count: kidsResults.length },
+      {
+        id: "categories",
+        label: "Категории",
+        count: availableRecipeKinds.length || "—",
+      },
+      { id: "favorites", label: "Избранное", count: favoriteResults.length },
+    ];
+
+    return (
+      <div className="space-y-4">
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          {tabs.map((tab) => {
+            const active = activeDeckMode === tab.id;
+
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => {
+                  setActiveDeckMode(tab.id);
+                  if (tab.id !== "categories") {
+                    setSelectedRecipeKind(null);
+                  }
+                  setDeckIndex(0);
+                }}
+                className={`shrink-0 rounded-full px-4 py-2 text-sm font-semibold transition ${
+                  active
+                    ? "bg-slate-900 text-white"
+                    : "bg-white text-slate-600 ring-1 ring-slate-200"
+                }`}
+              >
+                {tab.label} · {tab.count}
+              </button>
+            );
+          })}
+        </div>
+
+        {activeDeckMode === "categories" ? (
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {availableRecipeKinds.map(({ kind, count }) => {
+              const active = selectedRecipeKind === kind;
+
+              return (
+                <button
+                  key={kind}
+                  type="button"
+                  onClick={() => {
+                    setSelectedRecipeKind(kind);
+                    setDeckIndex(0);
+                  }}
+                  className={`shrink-0 rounded-full px-4 py-2 text-sm font-semibold transition ${
+                    active
+                      ? "bg-green-500 text-white"
+                      : "bg-white text-slate-600 ring-1 ring-slate-200"
+                  }`}
+                >
+                  {recipeKindLabels[kind]} · {count}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+
+        {activeDeckMode === "favorites" ? (
+          <div className="rounded-3xl bg-white p-4 shadow-sm ring-1 ring-slate-100">
+            <h2 className="text-xl font-bold text-slate-900">Избранное</h2>
+
+            {loadingFavorites ? (
+              <p className="mt-3 text-sm text-slate-500">Загрузка...</p>
+            ) : favoriteResults.length === 0 ? (
+              <p className="mt-3 text-sm text-slate-500">
+                Пока нет избранных рецептов. Добавляй понравившиеся свайпом или
+                кнопкой.
+              </p>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {favoriteResults.map((favorite) => (
+                  <RecipeCard key={favorite.recipe.id} result={favorite} />
+                ))}
+              </div>
+            )}
+          </div>
+        ) : activeDeckMode === "categories" && !selectedRecipeKind ? (
+          <div className="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
+            <h2 className="text-xl font-bold text-slate-900">
+              Выбери категорию
+            </h2>
+            <p className="mt-2 text-sm text-slate-500">
+              После выбора категории откроется свайп-подборка рецептов этого
+              типа.
+            </p>
+          </div>
+        ) : (
+          <>
+        {loadingSuggested || matchingRecipes ? (
+          <div className="rounded-3xl bg-white p-5 text-sm font-medium text-slate-500 shadow-sm ring-1 ring-slate-100">
+            Подбираю рецепты по продуктам дома...
+          </div>
+        ) : !result || !recipe ? (
+          <div className="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
+            <h2 className="text-xl font-bold text-slate-900">
+              Пока нет рецептов
+            </h2>
+            <p className="mt-2 text-sm text-slate-500">
+              Добавь продукты в “Есть дома” или попробуй другой режим.
+            </p>
+            <button
+              type="button"
+              onClick={refreshRecipesManually}
+              disabled={matchingRecipes || loadingSuggested}
+              className="mt-4 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
+            >
+              Обновить подбор
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="relative min-h-[460px] overflow-hidden">
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={`${activeDeckMode}_${deckIndex}_${recipe.id}`}
+                  drag
+                  dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
+                  dragElastic={0.18}
+                  onDragEnd={(_, info) => handleRecipeDragEnd(result, info)}
+                  initial={{ opacity: 0, y: 24, scale: 0.96 }}
+                  animate={{ opacity: 1, y: 0, scale: 1, rotate: 0 }}
+                  exit={{
+                    opacity: 0,
+                    x:
+                      swipeDirection === "right"
+                        ? 130
+                        : swipeDirection === "left"
+                          ? -130
+                          : 0,
+                    y: swipeDirection === "up" ? -120 : 24,
+                    rotate:
+                      swipeDirection === "right"
+                        ? 8
+                        : swipeDirection === "left"
+                          ? -8
+                          : 0,
+                    scale: 0.96,
+                  }}
+                  transition={{ duration: 0.22 }}
+                  className="absolute inset-x-0 top-0 cursor-grab active:cursor-grabbing"
+                >
+                  <div className="overflow-hidden rounded-[28px] bg-slate-900 p-5 text-white shadow-sm">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-green-200">
+                          {recipe.category || "Рецепт"}
+                        </p>
+                        <h2 className="mt-2 text-3xl font-bold leading-tight break-words">
+                          {recipe.title}
+                        </h2>
+                      </div>
+
+                      <div className="shrink-0 rounded-2xl bg-white/10 px-3 py-2 text-center">
+                        <div className="text-xs text-green-100">готовность</div>
+                        <div className="text-xl font-bold">{result.score}%</div>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 grid grid-cols-[0.85fr_0.85fr_1.3fr] gap-2 text-center">
+                      <div className="rounded-2xl bg-white/10 px-2 py-3">
+                        <div className="text-xl font-bold">
+                          {result.haveIds.length}
+                        </div>
+                        <div className="text-xs text-slate-300">есть дома</div>
+                      </div>
+
+                      <div className="rounded-2xl bg-white/10 px-2 py-3">
+                        <div className="text-xl font-bold">
+                          {result.missingIds.length}
+                        </div>
+                        <div className="text-xs text-slate-300">не хватает</div>
+                      </div>
+
+                      <div className="rounded-2xl bg-white/10 px-2 py-3">
+                        <div className="text-sm font-bold leading-tight">
+                          {getRecipeTimeLabel(recipe)}
+                        </div>
+                        <div className="text-xs text-slate-300">время</div>
+                      </div>
+                    </div>
+
+                    {result.missingIds.length > 0 ? (
+                      <div className="mt-5 rounded-2xl bg-white/10 px-4 py-3 text-sm text-slate-100">
+                        Не хватает:{" "}
+                        {result.missingIds
+                          .slice(0, 4)
+                          .map((id) => getProductLabel(id))
+                          .join(", ")}
+                        {result.missingIds.length > 4 ? "..." : ""}
+                      </div>
+                    ) : (
+                      <div className="mt-5 rounded-2xl bg-green-400/20 px-4 py-3 text-sm font-medium text-green-100">
+                        Всё нужное уже есть дома.
+                      </div>
+                    )}
+
+                    {recipe.description ? (
+                      <p className="mt-5 line-clamp-3 text-sm leading-6 text-slate-300">
+                        {recipe.description}
+                      </p>
+                    ) : null}
+
+                    <div className="mt-6 grid grid-cols-[1fr_auto] gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedRecipe(result);
+                          setMessage("");
+                        }}
+                        className="rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-slate-900"
+                      >
+                        Открыть рецепт
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          result.missingIds.length > 0
+                            ? addMissingToShopping(result)
+                            : startCooking(result)
+                        }
+                        disabled={addingRecipeId !== null}
+                        className="rounded-2xl bg-green-500 px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
+                      >
+                        {result.missingIds.length > 0 ? "В покупки" : "Готовить"}
+                      </button>
+                    </div>
+                  </div>
+                </motion.div>
+              </AnimatePresence>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={() => showNextDeckRecipe("left")}
+                className="rounded-2xl bg-white px-3 py-3 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-slate-100"
+              >
+                Пропустить
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  void toggleFavoriteRecipe(recipe);
+                  showNextDeckRecipe("right");
+                }}
+                className="rounded-2xl bg-white px-3 py-3 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-slate-100"
+              >
+                {isFavoriteRecipe(recipe.id) ? "В избранном" : "В избранное"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (result.missingIds.length > 0) {
+                    void addMissingToShopping(result);
+                  } else {
+                    void startCooking(result);
+                  }
+                  showNextDeckRecipe("up");
+                }}
+                disabled={addingRecipeId !== null}
+                className="rounded-2xl bg-slate-900 px-3 py-3 text-sm font-semibold text-white disabled:opacity-60"
+              >
+                {result.missingIds.length > 0 ? "В покупки" : "Готовить"}
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={refreshRecipesManually}
+              disabled={matchingRecipes || loadingSuggested}
+              className="w-full rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm ring-1 ring-slate-100 disabled:opacity-60"
+            >
+              Обновить подбор
+            </button>
+          </>
+        )}
+          </>
+        )}
+      </div>
+    );
+  }
+
+  function renderRecipeListBlock({
     title,
     count,
     open,
@@ -2730,6 +3108,7 @@ export default function AiPage() {
   }
 
   const isSearching = normalizeText(search).length >= 2;
+  const showAdvancedBlocks = false;
 
   const cookingGroups = useMemo(() => {
     const groups = new Map<
@@ -2802,7 +3181,7 @@ export default function AiPage() {
               className="pointer-events-none fixed left-1/2 top-4 z-[9998] w-[88%] max-w-md -translate-x-1/2 rounded-2xl bg-blue-50 px-4 py-3 shadow-xl ring-1 ring-blue-100"
             >
               <div className="text-sm font-medium text-blue-700">
-                🤖 Сопоставляю холодильник и рецепты...
+                🤖 Сопоставляю продукты дома и рецепты...
               </div>
 
               <div className="mt-2 h-2 overflow-hidden rounded-full bg-blue-100">
@@ -2827,11 +3206,13 @@ export default function AiPage() {
           <p className="text-sm text-slate-500">FamilyShop</p>
           <h1 className="text-3xl font-bold">AI Cook 🤖</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Рецепты по холодильнику, времени и семейным сценариям
+            Рецепты по продуктам дома, времени и семейным сценариям
           </p>
         </motion.header>
 
         <section className="space-y-5 px-5">
+          {!isSearching && renderSwipeRecipeDeck()}
+
           <motion.input
             initial={{ opacity: 0, y: 14 }}
             animate={{ opacity: 1, y: 0 }}
@@ -2844,7 +3225,7 @@ export default function AiPage() {
 
           {!isSearching && recipesNeedRefresh && !matchingRecipes && !loadingSuggested && (
             <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800 ring-1 ring-amber-100">
-              🔄 Подбор рецептов не обновлён. Нажми “Обновить рецепты”, когда нужно пересчитать по холодильнику.
+              🔄 Подбор рецептов не обновлён. Нажми “Обновить подбор”, когда нужно пересчитать по продуктам дома.
             </div>
           )}
 
@@ -2963,28 +3344,19 @@ export default function AiPage() {
             </ToggleBlock>
           )}
 
-          {!isSearching && (
+          {!isSearching && showAdvancedBlocks && (
             <ToggleBlock
               title="🍽 Меню на сегодня"
               count={recipeCountText || mealPlans.length}
               open={showMealPlan}
               onToggle={() => setShowMealPlan((prev) => !prev)}
             >
-              <button
-                type="button"
-                onClick={refreshRecipesManually}
-                disabled={matchingRecipes || loadingSuggested}
-                className="mb-4 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm disabled:opacity-50 active:scale-[0.99]"
-              >
-                {matchingRecipes ? "⏳ Обновляю..." : "🔄 Обновить рецепты"}
-              </button>
-
               {loadingSuggested || matchingRecipes ? (
                 <p className="text-sm text-slate-500">Собираю меню...</p>
               ) : mealPlans.length === 0 ? (
                 <p className="text-sm text-slate-500">
                   Пока не получилось собрать завтрак, обед или ужин. Добавь
-                  больше продуктов в холодильник.
+                  больше продуктов в “Есть дома”.
                 </p>
               ) : (
                 <div className="space-y-4">
@@ -2996,7 +3368,7 @@ export default function AiPage() {
             </ToggleBlock>
           )}
 
-          {!isSearching && (
+          {!isSearching && showAdvancedBlocks && (
             <>
               <ToggleBlock
                 title="⚡ Быстро приготовить"
@@ -3004,22 +3376,13 @@ export default function AiPage() {
                 open={showQuick}
                 onToggle={() => setShowQuick((prev) => !prev)}
               >
-                <button
-                  type="button"
-                  onClick={refreshRecipesManually}
-                  disabled={matchingRecipes || loadingSuggested}
-                  className="mb-4 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm disabled:opacity-50 active:scale-[0.99]"
-                >
-                  {matchingRecipes ? "⏳ Обновляю..." : "🔄 Обновить рецепты"}
-                </button>
-
                 {loadingSuggested || matchingRecipes ? (
                   <p className="text-sm text-slate-500">
                     Подбираю быстрые рецепты...
                   </p>
                 ) : quickResults.length === 0 ? (
                   <p className="text-sm text-slate-500">
-                    Пока нет быстрых рецептов по текущему холодильнику.
+                    Пока нет быстрых рецептов по текущим продуктам дома.
                   </p>
                 ) : (
                   <div className="space-y-3">
@@ -3030,14 +3393,15 @@ export default function AiPage() {
                 )}
               </ToggleBlock>
 
-              <RecipeListBlock
-                title="👶 Детское меню"
-                count={recipeCountText || kidsResults.length}
-                open={showKids}
-                onToggle={() => setShowKids((prev) => !prev)}
-                items={kidsResults}
-                emptyText="Пока не нашёл рецепты с пометкой детское по текущему холодильнику."
-              />
+              {renderRecipeListBlock({
+                title: "👶 Детское меню",
+                count: recipeCountText || kidsResults.length,
+                open: showKids,
+                onToggle: () => setShowKids((prev) => !prev),
+                items: kidsResults,
+                emptyText:
+                  "Пока не нашёл рецепты с пометкой детское по текущим продуктам дома.",
+              })}
 
               <ToggleBlock
                 title="⭐ Избранные"
@@ -3045,15 +3409,6 @@ export default function AiPage() {
                 open={showFavorites}
                 onToggle={() => setShowFavorites((prev) => !prev)}
               >
-                <button
-                  type="button"
-                  onClick={refreshRecipesManually}
-                  disabled={matchingRecipes || loadingSuggested}
-                  className="mb-4 w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm disabled:opacity-50 active:scale-[0.99]"
-                >
-                  {matchingRecipes ? "⏳ Обновляю..." : "🔄 Обновить рецепты"}
-                </button>
-
                 {loadingFavorites ? (
                   <p className="text-sm text-slate-500">Загрузка...</p>
                 ) : favoriteResults.length === 0 ? (
@@ -3096,9 +3451,7 @@ export default function AiPage() {
 
                       <p className="mt-1 text-sm text-slate-500">
                         {selectedRecipe.recipe.category || "Рецепт"}
-                        {getRecipeTime(selectedRecipe.recipe)
-                          ? ` · ${getRecipeTime(selectedRecipe.recipe)}`
-                          : ""}
+                        {` · ${getRecipeTimeLabel(selectedRecipe.recipe)}`}
                       </p>
                     </div>
 

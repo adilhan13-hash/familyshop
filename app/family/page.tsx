@@ -160,7 +160,7 @@ export default function FamilyPage() {
         ? window.location.origin
         : "https://familyshop-kz.netlify.app";
 
-    setInviteLink(`${origin}/invite/${code}`);
+    setInviteLink(`${origin}/invite?code=${encodeURIComponent(code)}`);
     setMessage("Одноразовая ссылка приглашения создана.");
     setCreatingInvite(false);
   }
@@ -286,11 +286,14 @@ export default function FamilyPage() {
                       <div className="flex items-center gap-3">
                         <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-full bg-white text-lg font-bold text-slate-500">
                           {profile?.photoBase64 ? (
-                            <img
-                              src={profile.photoBase64}
-                              alt={profile.displayName || phone}
-                              className="h-full w-full object-cover"
-                            />
+                            <>
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={profile.photoBase64}
+                                alt={profile.displayName || phone}
+                                className="h-full w-full object-cover"
+                              />
+                            </>
                           ) : (
                             <span>
                               {profile?.displayName

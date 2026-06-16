@@ -17,6 +17,7 @@ import {
   serverTimestamp,
   setDoc,
 } from "firebase/firestore";
+import type { DocumentData, QueryDocumentSnapshot } from "firebase/firestore";
 import { addActivity } from "../../lib/activity";
 
 type ShoppingItem = {
@@ -55,6 +56,10 @@ type Product = {
   createdByUser?: string;
   manuallyCreated?: boolean;
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
 
 export default function ShoppingPage() {
   const { familyId, appUser } = useFamilyAuth();
@@ -264,7 +269,9 @@ export default function ShoppingPage() {
     }, 2200);
   }
 
-  function productFromDoc(document: any): Product | null {
+  function productFromDoc(
+    document: QueryDocumentSnapshot<DocumentData>,
+  ): Product | null {
     const data = document.data();
 
     if (!data.name) return null;
@@ -290,30 +297,35 @@ export default function ShoppingPage() {
     };
   }
 
-  function productFromRaw(raw: any, index: number): Product | null {
-    const rawName = raw?.name || raw?.title || raw?.id;
+  function productFromRaw(raw: unknown, index: number): Product | null {
+    if (!isRecord(raw)) return null;
+
+    const rawName = raw.name || raw.title || raw.id;
 
     if (!rawName) return null;
 
-    const id = raw.id || raw.productId || makeSafeId(rawName) || `product_${index}`;
+    const name = String(rawName);
+    const id =
+      String(raw.id || raw.productId || makeSafeId(name) || `product_${index}`);
 
     return {
       id,
-      icon: raw.icon || "🛒",
-      name: cleanProductName(rawName),
-      category: raw.category || "Другое",
-      ingredientId: raw.ingredientId || id,
+      icon: String(raw.icon || "🛒"),
+      name: cleanProductName(name),
+      category: String(raw.category || "Другое"),
+      ingredientId: raw.ingredientId ? String(raw.ingredientId) : id,
       aliases: Array.isArray(raw.aliases) ? raw.aliases : [],
       search: Array.isArray(raw.search) ? raw.search : [],
-      purchaseCount: raw.purchaseCount || 0,
+      purchaseCount:
+        typeof raw.purchaseCount === "number" ? raw.purchaseCount : 0,
       popular: Boolean(raw.popular),
       recipeIngredient: Boolean(raw.recipeIngredient),
       fridgeAllowed: raw.fridgeAllowed !== false,
       shoppingAllowed: raw.shoppingAllowed !== false,
-      source: raw.source || "",
+      source: String(raw.source || ""),
       custom: Boolean(raw.custom),
-      createdBy: raw.createdBy || "",
-      createdByUser: raw.createdByUser || "",
+      createdBy: String(raw.createdBy || ""),
+      createdByUser: String(raw.createdByUser || ""),
       manuallyCreated: Boolean(raw.manuallyCreated),
     };
   }
@@ -509,6 +521,8 @@ export default function ShoppingPage() {
     );
 
     return () => unsubscribe();
+    // productFromDoc only normalizes Firestore snapshots with route-local helpers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [familyId]);
 
   useEffect(() => {
@@ -532,6 +546,8 @@ export default function ShoppingPage() {
     });
 
     return () => unsubscribe();
+    // productFromDoc only normalizes Firestore snapshots with route-local helpers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [familyId]);
 
   useEffect(() => {
@@ -550,7 +566,9 @@ export default function ShoppingPage() {
         const rawProducts = await response.json();
         const items: Product[] = Array.isArray(rawProducts)
           ? (rawProducts
-              .map((product: any, index: number) => productFromRaw(product, index))
+              .map((product: unknown, index: number) =>
+                productFromRaw(product, index),
+              )
               .filter(Boolean) as Product[])
           : [];
 
@@ -576,6 +594,8 @@ export default function ShoppingPage() {
     return () => {
       active = false;
     };
+    // productFromRaw only normalizes static JSON with route-local helpers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const visibleSearchProducts = useMemo(() => {
@@ -770,7 +790,7 @@ export default function ShoppingPage() {
       return;
     }
 
-    const productId = makeSafeId(cleanName) || `product-${Date.now()}`;
+    const productId = makeSafeId(cleanName) || `product-${normalized}`;
     const icon = guessIcon(cleanName);
     const category = guessCategory(cleanName);
     const searchTerms = buildSearchTerms(cleanName, productId);
@@ -1052,7 +1072,7 @@ export default function ShoppingPage() {
     }
   }
 
-  function ProductGrid({
+  function renderProductGrid({
     items,
     loading,
     emptyText,
@@ -1320,11 +1340,11 @@ export default function ShoppingPage() {
                 </span>
               </div>
 
-              <ProductGrid
-                items={visibleSearchProducts}
-                loading={loadingProducts}
-                emptyText="Ничего не найдено."
-              />
+              {renderProductGrid({
+                items: visibleSearchProducts,
+                loading: loadingProducts,
+                emptyText: "Ничего не найдено.",
+              })}
 
               {!loadingProducts && normalizeName(search).length >= 2 && (
                 <div className="mt-4 space-y-3">
@@ -1371,11 +1391,12 @@ export default function ShoppingPage() {
               </span>
             </div>
 
-            <ProductGrid
-              items={favoriteProducts}
-              loading={loadingFavorites}
-              emptyText="Пока нет избранных. Нажми ☆ в правом верхнем углу карточки товара."
-            />
+            {renderProductGrid({
+              items: favoriteProducts,
+              loading: loadingFavorites,
+              emptyText:
+                "Пока нет избранных. Нажми ☆ в правом верхнем углу карточки товара.",
+            })}
           </motion.div>
 
           <motion.div
@@ -1415,15 +1436,15 @@ export default function ShoppingPage() {
                   transition={{ duration: 0.2 }}
                   className="overflow-hidden pt-4"
                 >
-                  <ProductGrid
-                    items={
+                  {renderProductGrid({
+                    items:
                       showAllFrequent
                         ? frequentProducts
-                        : frequentProducts.slice(0, frequentVisibleCount)
-                    }
-                    loading={loadingFrequent}
-                    emptyText="Пока пусто. Купленные товары будут появляться здесь автоматически."
-                  />
+                        : frequentProducts.slice(0, frequentVisibleCount),
+                    loading: loadingFrequent,
+                    emptyText:
+                      "Пока пусто. Купленные товары будут появляться здесь автоматически.",
+                  })}
 
                   {frequentProducts.length > 12 && (
                     <motion.button
