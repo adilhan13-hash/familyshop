@@ -748,7 +748,8 @@ export default function AiPage() {
         setLoadingProducts(true);
 
         const response = await fetch(
-          "/data/products_v8_ready_for_firebase.json",
+          `/data/products_v8_ready_for_firebase.json?v=${Date.now()}`,
+          { cache: "no-store" },
         );
 
         if (!response.ok) {
@@ -849,16 +850,29 @@ export default function AiPage() {
       try {
         setLoadingSuggested(true);
 
-        const response = await fetch("/data/recipes_all.json");
+        const response = await fetch(`/data/recipes_all.json?v=${Date.now()}`, {
+          cache: "no-store",
+        });
 
         if (!response.ok) {
           throw new Error(`Recipes JSON load failed: ${response.status}`);
         }
 
-        const rawRecipes = await response.json();
+        const rawJson = await response.text();
+        const parsedRecipes = JSON.parse(rawJson) as unknown;
+        const rawRecipes = Array.isArray(parsedRecipes)
+          ? parsedRecipes
+          : isRecord(parsedRecipes) && Array.isArray(parsedRecipes.recipes)
+            ? parsedRecipes.recipes
+            : isRecord(parsedRecipes) && Array.isArray(parsedRecipes.items)
+              ? parsedRecipes.items
+              : [];
 
-        const items: Recipe[] = Array.isArray(rawRecipes)
-          ? rawRecipes.map((recipe: unknown, index: number) => {
+        if (!Array.isArray(rawRecipes) || rawRecipes.length === 0) {
+          throw new Error("Recipes JSON loaded, but recipes array is empty or has unknown format");
+        }
+
+        const items: Recipe[] = rawRecipes.map((recipe: unknown, index: number) => {
               const rawRecipe = isRecord(recipe) ? recipe : {};
               const title = String(
                 rawRecipe.title || rawRecipe.name || "Без названия",
@@ -928,15 +942,15 @@ export default function AiPage() {
                   } ${tags.map((tag) => `${tag.name || ""} ${tag.slug || ""}`).join(" ")} ${rawIngredients.map((ingredient) => `${ingredient.name || ""} ${ingredient.ingredientId || ""} ${ingredient.quantity || ""}`).join(" ")}`,
                 ),
               };
-            })
-          : [];
+            });
 
         if (active) {
           setSuggestedRecipes(items);
         }
       } catch (error) {
-        console.warn("AI recipes local load warning", error);
+        console.error("RECIPES LOAD ERROR", error);
         if (active) {
+          setMessage(`Ошибка загрузки рецептов: ${String(error)}`);
           setSuggestedRecipes([]);
         }
       } finally {
