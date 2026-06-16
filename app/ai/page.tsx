@@ -27,6 +27,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDocs,
   limit,
   onSnapshot,
   orderBy,
@@ -748,8 +749,7 @@ export default function AiPage() {
         setLoadingProducts(true);
 
         const response = await fetch(
-          `/data/products_v8_ready_for_firebase.json?v=${Date.now()}`,
-          { cache: "no-store" },
+          "/data/products_v8_ready_for_firebase.json",
         );
 
         if (!response.ok) {
@@ -846,111 +846,100 @@ export default function AiPage() {
   useEffect(() => {
     let active = true;
 
-    async function loadAllRecipesFromFile() {
+    async function loadAllRecipesFromFirebase() {
       try {
         setLoadingSuggested(true);
+        setMessage("🔥 Загружаю рецепты из Firebase...");
 
-        const response = await fetch(`/data/recipes_all.json?v=${Date.now()}`, {
-          cache: "no-store",
-        });
+        const recipesSnapshot = await getDocs(collection(db, "recipes"));
 
-        if (!response.ok) {
-          throw new Error(`Recipes JSON load failed: ${response.status}`);
-        }
+        const items: Recipe[] = recipesSnapshot.docs.map((recipeDoc, index) => {
+          const rawRecipe = recipeDoc.data();
+          const title = String(
+            rawRecipe.title || rawRecipe.name || "Без названия",
+          );
 
-        const rawJson = await response.text();
-        const parsedRecipes = JSON.parse(rawJson) as unknown;
-        const rawRecipes = Array.isArray(parsedRecipes)
-          ? parsedRecipes
-          : isRecord(parsedRecipes) && Array.isArray(parsedRecipes.recipes)
-            ? parsedRecipes.recipes
-            : isRecord(parsedRecipes) && Array.isArray(parsedRecipes.items)
-              ? parsedRecipes.items
-              : [];
+          const tags = Array.isArray(rawRecipe.tags)
+            ? (rawRecipe.tags as RecipeTag[])
+            : [];
 
-        if (!Array.isArray(rawRecipes) || rawRecipes.length === 0) {
-          throw new Error("Recipes JSON loaded, but recipes array is empty or has unknown format");
-        }
+          const rawIngredients = Array.isArray(rawRecipe.rawIngredients)
+            ? (rawRecipe.rawIngredients as RawIngredient[])
+            : [];
 
-        const items: Recipe[] = rawRecipes.map((recipe: unknown, index: number) => {
-              const rawRecipe = isRecord(recipe) ? recipe : {};
-              const title = String(
-                rawRecipe.title || rawRecipe.name || "Без названия",
-              );
-              const tags = Array.isArray(rawRecipe.tags)
-                ? (rawRecipe.tags as RecipeTag[])
-                : [];
-              const rawIngredients = Array.isArray(rawRecipe.rawIngredients)
-                ? (rawRecipe.rawIngredients as RawIngredient[])
-                : [];
-
-              return {
-                id: String(rawRecipe.id || rawRecipe.slug || `recipe_${index}`),
-                title,
-                category: String(rawRecipe.category || "Рецепт"),
-                categorySlug: rawRecipe.categorySlug
-                  ? String(rawRecipe.categorySlug)
-                  : undefined,
-                cuisine: rawRecipe.cuisine ? String(rawRecipe.cuisine) : undefined,
-                difficulty: rawRecipe.difficulty
-                  ? String(rawRecipe.difficulty)
-                  : undefined,
-                cookingTime:
-                  typeof rawRecipe.cookingTime === "number"
-                    ? rawRecipe.cookingTime
-                    : null,
-                cookingTimeText: rawRecipe.cookingTimeText
-                  ? String(rawRecipe.cookingTimeText)
-                  : null,
-                prepareTimeText: rawRecipe.prepareTimeText
-                  ? String(rawRecipe.prepareTimeText)
-                  : null,
-                time: rawRecipe.time ? String(rawRecipe.time) : undefined,
-                description: rawRecipe.description
-                  ? String(rawRecipe.description)
-                  : undefined,
-                note: rawRecipe.note ? String(rawRecipe.note) : undefined,
-                poster: rawRecipe.poster ? String(rawRecipe.poster) : null,
-                video: rawRecipe.video ? String(rawRecipe.video) : null,
-                tags,
-                popular: Boolean(rawRecipe.popular),
-                familyFriendly: Boolean(rawRecipe.familyFriendly),
-                rawIngredients,
-                ingredientIds: Array.isArray(rawRecipe.ingredientIds)
-                  ? rawRecipe.ingredientIds.map(String)
-                  : [],
-                optionalIngredientIds: Array.isArray(
-                  rawRecipe.optionalIngredientIds,
+          return {
+            id: String(rawRecipe.id || rawRecipe.slug || recipeDoc.id || `recipe_${index}`),
+            title,
+            category: String(rawRecipe.category || "Рецепт"),
+            categorySlug: rawRecipe.categorySlug
+              ? String(rawRecipe.categorySlug)
+              : undefined,
+            cuisine: rawRecipe.cuisine ? String(rawRecipe.cuisine) : undefined,
+            difficulty: rawRecipe.difficulty
+              ? String(rawRecipe.difficulty)
+              : undefined,
+            cookingTime:
+              typeof rawRecipe.cookingTime === "number"
+                ? rawRecipe.cookingTime
+                : null,
+            cookingTimeText: rawRecipe.cookingTimeText
+              ? String(rawRecipe.cookingTimeText)
+              : null,
+            prepareTimeText: rawRecipe.prepareTimeText
+              ? String(rawRecipe.prepareTimeText)
+              : null,
+            time: rawRecipe.time ? String(rawRecipe.time) : undefined,
+            description: rawRecipe.description
+              ? String(rawRecipe.description)
+              : undefined,
+            note: rawRecipe.note ? String(rawRecipe.note) : undefined,
+            poster: rawRecipe.poster ? String(rawRecipe.poster) : null,
+            video: rawRecipe.video ? String(rawRecipe.video) : null,
+            tags,
+            popular: Boolean(rawRecipe.popular),
+            familyFriendly: Boolean(rawRecipe.familyFriendly),
+            rawIngredients,
+            ingredientIds: Array.isArray(rawRecipe.ingredientIds)
+              ? rawRecipe.ingredientIds.map(String)
+              : [],
+            optionalIngredientIds: Array.isArray(rawRecipe.optionalIngredientIds)
+              ? rawRecipe.optionalIngredientIds.map(String)
+              : [],
+            steps: Array.isArray(rawRecipe.steps) ? rawRecipe.steps.map(String) : [],
+            stepImages: Array.isArray(rawRecipe.stepImages)
+              ? rawRecipe.stepImages.map(String)
+              : [],
+            source: rawRecipe.source ? String(rawRecipe.source) : undefined,
+            searchTitle: rawRecipe.searchTitle
+              ? String(rawRecipe.searchTitle)
+              : normalizeText(title),
+            searchText: normalizeText(
+              `${title} ${rawRecipe.searchTitle || ""} ${
+                rawRecipe.category || ""
+              } ${rawRecipe.categorySlug || ""} ${rawRecipe.cuisine || ""} ${
+                rawRecipe.difficulty || ""
+              } ${tags
+                .map((tag) => `${tag.name || ""} ${tag.slug || ""}`)
+                .join(" ")} ${rawIngredients
+                .map(
+                  (ingredient) =>
+                    `${ingredient.name || ""} ${ingredient.ingredientId || ""} ${
+                      ingredient.quantity || ""
+                    }`,
                 )
-                  ? rawRecipe.optionalIngredientIds.map(String)
-                  : [],
-                steps: Array.isArray(rawRecipe.steps)
-                  ? rawRecipe.steps.map(String)
-                  : [],
-                stepImages: Array.isArray(rawRecipe.stepImages)
-                  ? rawRecipe.stepImages.map(String)
-                  : [],
-                source: rawRecipe.source ? String(rawRecipe.source) : undefined,
-                searchTitle: rawRecipe.searchTitle
-                  ? String(rawRecipe.searchTitle)
-                  : normalizeText(title),
-                searchText: normalizeText(
-                  `${title} ${rawRecipe.searchTitle || ""} ${
-                    rawRecipe.category || ""
-                  } ${rawRecipe.categorySlug || ""} ${rawRecipe.cuisine || ""} ${
-                    rawRecipe.difficulty || ""
-                  } ${tags.map((tag) => `${tag.name || ""} ${tag.slug || ""}`).join(" ")} ${rawIngredients.map((ingredient) => `${ingredient.name || ""} ${ingredient.ingredientId || ""} ${ingredient.quantity || ""}`).join(" ")}`,
-                ),
-              };
-            });
+                .join(" ")}`,
+            ),
+          };
+        });
 
         if (active) {
           setSuggestedRecipes(items);
+          setMessage(`✅ Firebase рецепты загружены: ${items.length}`);
         }
       } catch (error) {
-        console.error("RECIPES LOAD ERROR", error);
+        console.error("FIREBASE RECIPES LOAD ERROR", error);
         if (active) {
-          setMessage(`Ошибка загрузки рецептов: ${String(error)}`);
+          setMessage(`Ошибка загрузки рецептов из Firebase: ${String(error)}`);
           setSuggestedRecipes([]);
         }
       } finally {
@@ -960,7 +949,7 @@ export default function AiPage() {
       }
     }
 
-    loadAllRecipesFromFile();
+    loadAllRecipesFromFirebase();
 
     return () => {
       active = false;
@@ -1308,9 +1297,12 @@ export default function AiPage() {
   ]);
 
   async function runRecipeMatching() {
-    if (loadingProducts || loadingFridge || loadingSuggested || !suggestedRecipes.length) {
-      setMessage("⚠️ База ещё загружается. Попробуй через секунду.");
+    if (!products.length || !fridgeItems.length || !suggestedRecipes.length) {
+      setMessage(
+  `⚠️ База ещё загружается. Товары: ${products.length}, холодильник: ${fridgeItems.length}, рецепты: ${suggestedRecipes.length}`
+);
       return;
+
     }
 
     setMatchingRecipes(true);
@@ -2659,6 +2651,18 @@ export default function AiPage() {
             placeholder="🔍 Найти рецепт от 2 букв"
             className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base outline-none focus:border-blue-400"
           />
+          {!isSearching && (
+  <button
+    type="button"
+    onClick={refreshRecipesManually}
+    disabled={matchingRecipes || loadingSuggested}
+    className="w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white shadow-sm disabled:opacity-50 active:scale-[0.99]"
+  >
+    {matchingRecipes
+      ? `⏳ Обновляю... ${matchProgress}%`
+      : "🔄 Обновить подбор"}
+  </button>
+)}
 
           {!isSearching && recipesNeedRefresh && !matchingRecipes && !loadingSuggested && (
             <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800 ring-1 ring-amber-100">
