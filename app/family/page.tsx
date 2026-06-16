@@ -5,6 +5,7 @@ import BottomNav from "../../components/BottomNav";
 import AvatarPicker from "../../components/AvatarPicker";
 import { useFamilyAuth } from "../../components/AuthProvider";
 import { db } from "../../lib/firebase";
+import { useFirestoreResumeKey } from "../../lib/useFirestoreResumeKey";
 import {
   arrayRemove,
   arrayUnion,
@@ -41,6 +42,7 @@ function getInitials(name?: string) {
 
 export default function FamilyPage() {
   const { user, appUser, familyId, logout, refreshAppUser } = useFamilyAuth();
+  const firestoreResumeKey = useFirestoreResumeKey();
 
   const [family, setFamily] = useState<FamilyData | null>(null);
   const [profiles, setProfiles] = useState<FamilyMemberProfile[]>([]);
@@ -57,20 +59,26 @@ export default function FamilyPage() {
 
     const familyRef = doc(db, "families", familyId);
 
-    const unsubscribe = onSnapshot(familyRef, (snapshot) => {
-      if (!snapshot.exists()) return;
+    const unsubscribe = onSnapshot(
+      familyRef,
+      (snapshot) => {
+        if (!snapshot.exists()) return;
 
-      const data = snapshot.data();
+        const data = snapshot.data();
 
-      setFamily({
-        ownerUid: data.ownerUid || "",
-        ownerPhone: data.ownerPhone || "",
-        members: data.members || data.allowedPhones || [],
-      });
-    });
+        setFamily({
+          ownerUid: data.ownerUid || "",
+          ownerPhone: data.ownerPhone || "",
+          members: data.members || data.allowedPhones || [],
+        });
+      },
+      (error) => {
+        console.warn("Family snapshot warning", error);
+      },
+    );
 
     return () => unsubscribe();
-  }, [familyId]);
+  }, [familyId, firestoreResumeKey]);
 
   useEffect(() => {
     if (!familyId) return;
@@ -80,25 +88,31 @@ export default function FamilyPage() {
       where("familyId", "==", familyId)
     );
 
-    const unsubscribe = onSnapshot(usersQuery, (snapshot) => {
-      const items: FamilyMemberProfile[] = [];
+    const unsubscribe = onSnapshot(
+      usersQuery,
+      (snapshot) => {
+        const items: FamilyMemberProfile[] = [];
 
-      snapshot.forEach((document) => {
-        const data = document.data();
+        snapshot.forEach((document) => {
+          const data = document.data();
 
-        items.push({
-          id: document.id,
-          phone: data.phone || "",
-          displayName: data.displayName || "",
-          photoBase64: data.photoBase64 || "",
+          items.push({
+            id: document.id,
+            phone: data.phone || "",
+            displayName: data.displayName || "",
+            photoBase64: data.photoBase64 || "",
+          });
         });
-      });
 
-      setProfiles(items);
-    });
+        setProfiles(items);
+      },
+      (error) => {
+        console.warn("Family users snapshot warning", error);
+      },
+    );
 
     return () => unsubscribe();
-  }, [familyId]);
+  }, [familyId, firestoreResumeKey]);
 
   const profileByPhone = useMemo(() => {
     const map = new Map<string, FamilyMemberProfile>();

@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import BottomNav from "../../components/BottomNav";
 import { useFamilyAuth } from "../../components/AuthProvider";
 import { db } from "../../lib/firebase";
+import { useFirestoreResumeKey } from "../../lib/useFirestoreResumeKey";
 import {
   collection,
   limit,
@@ -59,6 +60,7 @@ function formatTime(createdAt?: { seconds: number }) {
 
 export default function HomePage() {
   const { familyId } = useFamilyAuth();
+  const firestoreResumeKey = useFirestoreResumeKey();
 
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [counts, setCounts] = useState<CountState>({
@@ -76,60 +78,78 @@ export default function HomePage() {
       limit(20)
     );
 
-    const unsubscribe = onSnapshot(activityQuery, (snapshot) => {
-      const items: ActivityItem[] = [];
+    const unsubscribe = onSnapshot(
+      activityQuery,
+      (snapshot) => {
+        const items: ActivityItem[] = [];
 
-      snapshot.forEach((document) => {
-        const data = document.data();
+        snapshot.forEach((document) => {
+          const data = document.data();
 
-        items.push({
-          id: document.id,
-          userName: data.userName || "Пользователь",
-          userPhoto: data.userPhoto || "",
-          title: data.title || "",
-          message: data.message || "",
-          emoji: data.emoji || "🏡",
-          type: data.type || "",
-          createdAt: data.createdAt,
+          items.push({
+            id: document.id,
+            userName: data.userName || "Пользователь",
+            userPhoto: data.userPhoto || "",
+            title: data.title || "",
+            message: data.message || "",
+            emoji: data.emoji || "🏡",
+            type: data.type || "",
+            createdAt: data.createdAt,
+          });
         });
-      });
 
-      setActivity(items);
-    });
+        setActivity(items);
+      },
+      (error) => {
+        console.warn("Activity snapshot warning", error);
+      },
+    );
 
     return () => unsubscribe();
-  }, [familyId]);
+  }, [familyId, firestoreResumeKey]);
 
   useEffect(() => {
     if (!familyId) return;
 
     const unsubscribers = [
-      onSnapshot(collection(db, "families", familyId, "shopping"), (snapshot) => {
-        setCounts((current) => ({
-          ...current,
-          shopping: snapshot.size,
-        }));
-      }),
+      onSnapshot(
+        collection(db, "families", familyId, "shopping"),
+        (snapshot) => {
+          setCounts((current) => ({
+            ...current,
+            shopping: snapshot.size,
+          }));
+        },
+        (error) => console.warn("Home shopping count warning", error),
+      ),
 
-      onSnapshot(collection(db, "families", familyId, "fridge"), (snapshot) => {
-        setCounts((current) => ({
-          ...current,
-          fridge: snapshot.size,
-        }));
-      }),
+      onSnapshot(
+        collection(db, "families", familyId, "fridge"),
+        (snapshot) => {
+          setCounts((current) => ({
+            ...current,
+            fridge: snapshot.size,
+          }));
+        },
+        (error) => console.warn("Home fridge count warning", error),
+      ),
 
-      onSnapshot(collection(db, "families", familyId, "wish"), (snapshot) => {
-        setCounts((current) => ({
-          ...current,
-          wish: snapshot.size,
-        }));
-      }),
+      onSnapshot(
+        collection(db, "families", familyId, "wish"),
+        (snapshot) => {
+          setCounts((current) => ({
+            ...current,
+            wish: snapshot.size,
+          }));
+        },
+        (error) => console.warn("Home wish count warning", error),
+      ),
     ];
 
     return () => {
       unsubscribers.forEach((unsubscribe) => unsubscribe());
     };
-  }, [familyId]);
+  }, [familyId, firestoreResumeKey]);
 
   const todayActivity = useMemo(() => {
     return activity.filter((item) => {

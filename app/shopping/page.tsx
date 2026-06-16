@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import BottomNav from "../../components/BottomNav";
 import { useFamilyAuth } from "../../components/AuthProvider";
 import { db } from "../../lib/firebase";
+import { useFirestoreResumeKey } from "../../lib/useFirestoreResumeKey";
 import {
   addDoc,
   collection,
@@ -63,6 +64,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export default function ShoppingPage() {
   const { familyId, appUser } = useFamilyAuth();
+  const firestoreResumeKey = useFirestoreResumeKey();
 
   const [shoppingList, setShoppingList] = useState<ShoppingItem[]>([]);
   const [fridgeList, setFridgeList] = useState<FridgeItem[]>([]);
@@ -467,10 +469,14 @@ export default function ShoppingPage() {
         setShoppingList(items);
         setLoadingShopping(false);
       },
+      (error) => {
+        console.warn("Shopping snapshot warning", error);
+        setLoadingShopping(false);
+      },
     );
 
     return () => unsubscribe();
-  }, [familyId]);
+  }, [familyId, firestoreResumeKey]);
 
   useEffect(() => {
     if (!familyId) return;
@@ -495,10 +501,13 @@ export default function ShoppingPage() {
 
         setFridgeList(items);
       },
+      (error) => {
+        console.warn("Shopping fridge snapshot warning", error);
+      },
     );
 
     return () => unsubscribe();
-  }, [familyId]);
+  }, [familyId, firestoreResumeKey]);
 
   useEffect(() => {
     if (!familyId) return;
@@ -518,12 +527,16 @@ export default function ShoppingPage() {
         setFavoriteProducts(items);
         setLoadingFavorites(false);
       },
+      (error) => {
+        console.warn("Favorite products snapshot warning", error);
+        setLoadingFavorites(false);
+      },
     );
 
     return () => unsubscribe();
     // productFromDoc only normalizes Firestore snapshots with route-local helpers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [familyId]);
+  }, [familyId, firestoreResumeKey]);
 
   useEffect(() => {
     if (!familyId) return;
@@ -533,22 +546,29 @@ export default function ShoppingPage() {
       orderBy("purchaseCount", "desc"),
     );
 
-    const unsubscribe = onSnapshot(frequentQuery, (snapshot) => {
-      const items: Product[] = [];
+    const unsubscribe = onSnapshot(
+      frequentQuery,
+      (snapshot) => {
+        const items: Product[] = [];
 
-      snapshot.forEach((document) => {
-        const product = productFromDoc(document);
-        if (product) items.push(product);
-      });
+        snapshot.forEach((document) => {
+          const product = productFromDoc(document);
+          if (product) items.push(product);
+        });
 
-      setFrequentProducts(items);
-      setLoadingFrequent(false);
-    });
+        setFrequentProducts(items);
+        setLoadingFrequent(false);
+      },
+      (error) => {
+        console.warn("Frequent products snapshot warning", error);
+        setLoadingFrequent(false);
+      },
+    );
 
     return () => unsubscribe();
     // productFromDoc only normalizes Firestore snapshots with route-local helpers.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [familyId]);
+  }, [familyId, firestoreResumeKey]);
 
   useEffect(() => {
     let active = true;

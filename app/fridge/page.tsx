@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import BottomNav from "../../components/BottomNav";
 import { useFamilyAuth } from "../../components/AuthProvider";
 import { db } from "../../lib/firebase";
+import { useFirestoreResumeKey } from "../../lib/useFirestoreResumeKey";
 import {
   addDoc,
   collection,
@@ -107,6 +108,7 @@ function getFilterLabel(key: FilterKey) {
 
 export default function FridgePage() {
   const { familyId, appUser } = useFamilyAuth();
+  const firestoreResumeKey = useFirestoreResumeKey();
 
   const [fridgeItems, setFridgeItems] = useState<FridgeItem[]>([]);
   const [loadingFridge, setLoadingFridge] = useState(true);
@@ -139,11 +141,15 @@ export default function FridgePage() {
 
         setFridgeItems(items);
         setLoadingFridge(false);
-      }
+      },
+      (error) => {
+        console.warn("Fridge snapshot warning", error);
+        setLoadingFridge(false);
+      },
     );
 
     return () => unsubscribe();
-  }, [familyId]);
+  }, [familyId, firestoreResumeKey]);
 
   const filteredItems = useMemo(() => {
     const searchText = normalizeText(fridgeSearch);

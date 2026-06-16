@@ -3,10 +3,26 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import type { PanInfo } from "framer-motion";
 import BottomNav from "../../components/BottomNav";
 import { useFamilyAuth } from "../../components/AuthProvider";
 import { db } from "../../lib/firebase";
+import { useFirestoreResumeKey } from "../../lib/useFirestoreResumeKey";
+import { DeckModeLauncher } from "./components/DeckModeLauncher";
+import { SwipeRecipeDeck } from "./components/SwipeRecipeDeck";
+import {
+  getQuickRecipeKind,
+  getRecipeIngredientText,
+  getRecipeKind,
+  getRecipeSearchText,
+  getRecipeTagsText,
+  getRecipeTitleCategoryText,
+  isBadRecipeForAi,
+  isHolidayRecipe,
+  isKidsRecipe,
+  isQuickRecipe,
+  isRealDish,
+} from "./recipeClassifiers";
+import type { RecipeKind } from "./recipeClassifiers";
 import {
   collection,
   deleteDoc,
@@ -102,6 +118,19 @@ type MatchResult = {
   total: number;
 };
 
+type CachedMatchResult = {
+  recipeId: string;
+  score: number;
+  haveIds: string[];
+  missingIds: string[];
+  total: number;
+};
+
+type RecipeMatchInput = {
+  idsForScore: string[];
+  comparableIdsById: Record<string, string[]>;
+};
+
 type IngredientAlias = {
   icon: string;
   name: string;
@@ -119,30 +148,8 @@ type MealPlan = {
   missingIds: string[];
 };
 
-type RecipeKind =
-  | "breakfast"
-  | "salad"
-  | "soup"
-  | "main"
-  | "side"
-  | "baking"
-  | "dessert"
-  | "drink"
-  | "other";
-
 type CookDeckMode = "ready" | "kids" | "categories" | "favorites";
-
-const recipeKindLabels: Record<RecipeKind, string> = {
-  breakfast: "Завтраки",
-  salad: "Салаты",
-  soup: "Первое",
-  main: "Второе",
-  side: "Гарниры",
-  baking: "Выпечка",
-  dessert: "Десерты",
-  drink: "Напитки",
-  other: "Другое",
-};
+type SwipeDirection = "left" | "right" | "down" | "next";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -409,6 +416,7 @@ function ToggleBlock({
 
 export default function AiPage() {
   const { familyId, appUser } = useFamilyAuth();
+  const firestoreResumeKey = useFirestoreResumeKey();
 
   const [products, setProducts] = useState<Product[]>([]);
   const [fridgeItems, setFridgeItems] = useState<FridgeItem[]>([]);
@@ -451,9 +459,8 @@ export default function AiPage() {
   const [selectedRecipeKind, setSelectedRecipeKind] =
     useState<RecipeKind | null>(null);
   const [deckIndex, setDeckIndex] = useState(0);
-  const [swipeDirection, setSwipeDirection] = useState<
-    "left" | "right" | "up" | "next"
-  >("next");
+  const [swipeDirection, setSwipeDirection] =
+    useState<SwipeDirection>("next");
   const [recipeRefreshSeed, setRecipeRefreshSeed] = useState(() => Date.now());
   const [, setAddedAnimation] = useState(false);
   const [, setCookingAnimation] = useState(false);
@@ -568,32 +575,27 @@ export default function AiPage() {
     );
   }
 
-  function getRecipeTagsText(recipe: Recipe) {
-    return normalizeText(
-      (recipe.tags || [])
-        .map((tag) => `${tag.name || ""} ${tag.slug || ""}`)
-        .join(" "),
-    );
-  }
+  const recipeMatchInputs = useMemo(() => {
+    const inputs = new Map<string, RecipeMatchInput>();
 
-  function getRecipeSearchText(recipe: Recipe) {
-    if (recipe.searchText) return recipe.searchText;
+    for (const recipe of suggestedRecipes) {
+      const allIds = Array.from(new Set(recipe.ingredientIds || []));
+      const optionalIds = new Set(recipe.optionalIngredientIds || []);
+      const requiredIds = allIds.filter((id) => !optionalIds.has(id));
+      const idsForScore = requiredIds.length > 0 ? requiredIds : allIds;
+      const comparableIdsById: Record<string, string[]> = {};
 
-    const rawIngredientsText = (recipe.rawIngredients || [])
-      .map(
-        (ingredient) =>
-          `${ingredient.name || ""} ${ingredient.ingredientId || ""} ${ingredient.quantity || ""}`,
-      )
-      .join(" ");
+      for (const id of idsForScore) {
+        comparableIdsById[id] = getComparableIds(id);
+      }
 
-    return normalizeText(
-      `${recipe.title} ${recipe.searchTitle || ""} ${recipe.category || ""} ${
-        recipe.categorySlug || ""
-      } ${recipe.cuisine || ""} ${recipe.difficulty || ""} ${getRecipeTagsText(
-        recipe,
-      )} ${rawIngredientsText}`,
-    );
-  }
+      inputs.set(recipe.id, { idsForScore, comparableIdsById });
+    }
+
+    return inputs;
+    // getComparableIds depends on product catalog maps and aliases.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [suggestedRecipes, productsMap]);
 
   function makeShoppingDocId(value: string) {
     return (
@@ -631,101 +633,6 @@ export default function AiPage() {
     }
 
     return value;
-  }
-
-  function hasAnyWord(text: string, words: string[]) {
-    const preparedText = ` ${normalizeText(text)} `;
-    return words.some(
-      (word) =>
-        preparedText.includes(` ${normalizeText(word)} `) ||
-        preparedText.includes(normalizeText(word)),
-    );
-  }
-
-  function getRecipeTitleCategoryText(recipe: Recipe) {
-    return normalizeText(
-      `${recipe.title || ""} ${recipe.category || ""} ${recipe.categorySlug || ""} ${(
-        recipe.tags || []
-      )
-        .map((tag) => `${tag.name || ""} ${tag.slug || ""}`)
-        .join(" ")}`,
-    );
-  }
-
-  function getRecipeIngredientText(recipe: Recipe) {
-    return normalizeText(
-      `${(recipe.rawIngredients || [])
-        .map(
-          (ingredient) =>
-            `${ingredient.name || ""} ${ingredient.ingredientId || ""} ${ingredient.quantity || ""}`,
-        )
-        .join(" ")} ${(recipe.ingredientIds || []).join(" ")}`,
-    );
-  }
-
-  function recipeHasTitleSignal(recipe: Recipe, words: string[]) {
-    return hasAnyWord(getRecipeTitleCategoryText(recipe), words);
-  }
-
-  function isBadRecipeForAi(recipe: Recipe) {
-    const title = normalizeText(recipe.title || "");
-    const titleCategory = getRecipeTitleCategoryText(recipe);
-    const allText = getRecipeSearchText(recipe);
-    const stepsCount = recipe.steps?.length || 0;
-    const ingredientCount =
-      recipe.rawIngredients?.length || recipe.ingredientIds?.length || 0;
-
-    const badCategory = hasAnyWord(titleCategory, [
-      "соусы",
-      "соус",
-      "маринад",
-      "маринады",
-      "заготовки",
-      "консервация",
-      "соленья",
-      "молочные продукты домашние",
-      "сыр домашний",
-      "творог домашний",
-      "домашний сыр",
-    ]);
-
-    const badTitle = hasAnyWord(title, [
-      "соус",
-      "маринад",
-      "заправка",
-      "заготовка",
-      "заготовки",
-      "консервация",
-      "рассол",
-      "квас",
-      "закваска",
-      "домашний майонез",
-      "домашний сыр",
-      "сыр домашний",
-      "творог домашний",
-    ]);
-
-    const badTechnical = hasAnyWord(allText, [
-      "соус для",
-      "маринад для",
-      "заготовки на зиму",
-    ]);
-
-    if (badCategory || badTitle || badTechnical) return true;
-
-    if (ingredientCount < 2 && stepsCount < 2) return true;
-
-    return false;
-  }
-
-  function isRealDish(recipe: Recipe) {
-    if (isBadRecipeForAi(recipe)) return false;
-
-    const ingredientCount =
-      recipe.rawIngredients?.length || recipe.ingredientIds?.length || 0;
-    const stepsCount = recipe.steps?.length || 0;
-
-    return ingredientCount >= 2 || stepsCount >= 2;
   }
 
   function getSearchScore(recipe: Recipe, query: string) {
@@ -769,8 +676,6 @@ export default function AiPage() {
 
     if (score <= 0) return 0;
 
-    // buildMatch is a route-local function declaration used for scoring.
-    // eslint-disable-next-line react-hooks/immutability
     const match = buildMatch(recipe);
     score += Math.min(match.score, 100);
     score += Math.min(match.haveIds.length * 8, 80);
@@ -783,346 +688,6 @@ export default function AiPage() {
     if (recipe.familyFriendly) score += 8;
 
     return Math.max(0, score);
-  }
-
-  function getRecipeKind(recipe: Recipe): RecipeKind {
-    if (!isRealDish(recipe)) return "other";
-
-    const titleCategory = getRecipeTitleCategoryText(recipe);
-    const allText = getRecipeSearchText(recipe);
-    const ingredientText = getRecipeIngredientText(recipe);
-
-    const hasTitle = (words: string[]) => recipeHasTitleSignal(recipe, words);
-    const hasCategory = (words: string[]) => hasAnyWord(titleCategory, words);
-    const hasIngredients = (words: string[]) =>
-      hasAnyWord(ingredientText, words);
-
-    if (
-      hasTitle([
-        "салат",
-        "салаты",
-        "винегрет",
-        "цезарь",
-        "оливье",
-        "сельдь под шубой",
-        "селедка под шубой",
-      ]) ||
-      hasCategory(["салат", "салаты"])
-    ) {
-      return "salad";
-    }
-
-    if (
-      hasTitle([
-        "суп",
-        "супы",
-        "борщ",
-        "щи",
-        "уха",
-        "рассольник",
-        "солянка",
-        "шурпа",
-        "бульон",
-        "свекольник",
-        "харчо",
-        "лагман",
-        "окрошка",
-        "крем суп",
-        "суп пюре",
-        "гороховый суп",
-        "чечевичный суп",
-        "фасолевый суп",
-      ]) ||
-      hasCategory(["первое блюдо", "первые блюда", "суп", "супы"])
-    ) {
-      return "soup";
-    }
-
-    if (
-      hasTitle([
-        "завтрак",
-        "омлет",
-        "яичница",
-        "каша",
-        "сырники",
-        "гренки",
-        "тост",
-        "бутерброд",
-        "сэндвич",
-      ]) ||
-      hasCategory(["завтрак", "завтраки"])
-    ) {
-      return "breakfast";
-    }
-
-    if (
-      hasTitle([
-        "тесто",
-        "паста домашняя",
-        "домашняя паста",
-        "лапша домашняя",
-        "домашняя лапша",
-        "галушки",
-        "клецки",
-        "вареники",
-        "пельмени",
-        "манты",
-        "хинкали",
-        "лепешки",
-        "лепёшки",
-        "хлеб",
-        "булочка",
-        "булочки",
-        "блины",
-        "блинчики",
-        "оладьи",
-        "оладушки",
-        "пирожки",
-        "пирог",
-        "пироги",
-        "пицца",
-      ]) ||
-      hasCategory(["выпечка", "тесто", "мучные блюда"])
-    ) {
-      return "baking";
-    }
-
-    if (
-      hasTitle([
-        "торт",
-        "пирожное",
-        "печенье",
-        "кекс",
-        "десерт",
-        "ватрушка",
-        "пончики",
-        "мороженое",
-        "желе",
-      ]) ||
-      hasCategory(["десерт", "десерты"])
-    ) {
-      return "dessert";
-    }
-
-    if (
-      hasTitle([
-        "чай",
-        "кофе",
-        "компот",
-        "морс",
-        "кисель",
-        "напиток",
-        "сок",
-        "какао",
-        "смузи",
-        "коктейль",
-      ]) ||
-      hasCategory(["напитки", "напиток"])
-    ) {
-      return "drink";
-    }
-
-    const meatFishSignal =
-      hasTitle([
-        "курица",
-        "куриное",
-        "куриный",
-        "куриная",
-        "индейка",
-        "утка",
-        "мясо",
-        "мясной",
-        "говядина",
-        "свинина",
-        "баранина",
-        "конина",
-        "фарш",
-        "рыба",
-        "семга",
-        "сёмга",
-        "лосось",
-        "форель",
-        "минтай",
-        "судак",
-        "котлеты",
-        "котлета",
-        "тефтели",
-        "фрикадельки",
-        "гуляш",
-        "жаркое",
-        "отбивные",
-        "шашлык",
-        "стейк",
-        "плов",
-        "голубцы",
-        "долма",
-        "лазанья",
-        "шаурма с курицей",
-        "паста с курицей",
-        "паста с мясом",
-        "макароны с мясом",
-        "картофель с мясом",
-        "картошка с мясом",
-        "рис с мясом",
-        "гречка с мясом",
-      ]) ||
-      hasIngredients([
-        "курица",
-        "куриное филе",
-        "куриная грудка",
-        "говядина",
-        "свинина",
-        "баранина",
-        "фарш",
-        "рыба",
-        "индейка",
-      ]);
-
-    if (
-      meatFishSignal &&
-      !hasAnyWord(allText, ["салат", "суп", "соус", "маринад", "тесто"])
-    ) {
-      return "main";
-    }
-
-    const sideSignal =
-      hasTitle([
-        "рис",
-        "гречка",
-        "картофель",
-        "картошка",
-        "пюре",
-        "макароны",
-        "спагетти",
-        "паста",
-        "овощи на гарнир",
-        "овощное рагу",
-        "рагу овощное",
-        "деруны",
-        "драники",
-        "запеченные овощи",
-        "запечённые овощи",
-      ]) || hasCategory(["гарнир", "гарниры"]);
-
-    if (sideSignal && !meatFishSignal) {
-      return "side";
-    }
-
-    const categoryLooksLikeMain = hasCategory([
-      "второе блюдо",
-      "вторые блюда",
-      "горячее",
-      "горячие блюда",
-      "основное блюдо",
-      "основные блюда",
-    ]);
-
-    if (categoryLooksLikeMain && meatFishSignal) {
-      return "main";
-    }
-
-    return "other";
-  }
-
-  function getQuickRecipeKind(recipe: Recipe) {
-    const kind = getRecipeKind(recipe);
-    return ["breakfast", "salad", "soup", "main", "side", "baking"].includes(
-      kind,
-    )
-      ? kind
-      : "other";
-  }
-
-  function isQuickRecipe(recipe: Recipe) {
-    if (!isRealDish(recipe)) return false;
-
-    const kind = getQuickRecipeKind(recipe);
-    const time = recipe.cookingTime || 0;
-
-    if (kind === "breakfast") return time === 0 || time <= 35;
-    if (kind === "salad") return time === 0 || time <= 40;
-    if (kind === "soup") return time === 0 || time <= 75;
-    if (kind === "main") return time === 0 || time <= 75;
-    if (kind === "side") return time === 0 || time <= 55;
-    if (kind === "baking") return time === 0 || time <= 90;
-
-    return false;
-  }
-
-  function isKidsRecipe(recipe: Recipe) {
-    if (!isRealDish(recipe)) return false;
-
-    const text = getRecipeSearchText(recipe);
-
-    if (
-      hasAnyWord(text, [
-        "алкоголь",
-        "водка",
-        "вино",
-        "коньяк",
-        "ром",
-        "острый",
-        "острая",
-        "чили",
-        "хрен",
-        "горчица",
-      ])
-    ) {
-      return false;
-    }
-
-    return hasAnyWord(text, [
-      "детское",
-      "детский",
-      "детская",
-      "детские",
-      "детского",
-      "детскому",
-      "для детей",
-      "детям",
-      "ребенку",
-      "ребёнку",
-      "малышу",
-      "малышам",
-      "детское меню",
-      "детское питание",
-    ]);
-  }
-
-  function isHolidayRecipe(recipe: Recipe) {
-    if (!isRealDish(recipe)) return false;
-
-    const text = getRecipeSearchText(recipe);
-
-    const holidayTag = hasAnyWord(text, [
-      "праздничный стол",
-      "праздничное",
-      "праздник",
-      "новогодний",
-      "новый год",
-      "рождество",
-      "день рождения",
-      "банкет",
-      "фуршет",
-      "гости",
-      "для гостей",
-      "к праздничному столу",
-      "праздничная закуска",
-      "праздничный салат",
-      "праздничное блюдо",
-    ]);
-
-    const kind = getRecipeKind(recipe);
-    const ingredientCount =
-      recipe.rawIngredients?.length || recipe.ingredientIds?.length || 0;
-    const stepsCount = recipe.steps?.length || 0;
-
-    return (
-      holidayTag &&
-      ["salad", "soup", "main", "dessert"].includes(kind) &&
-      ingredientCount >= 4 &&
-      stepsCount >= 2
-    );
   }
 
   function seededNumber(value: string) {
@@ -1268,10 +833,14 @@ export default function AiPage() {
         setFridgeItems(items);
         setLoadingFridge(false);
       },
+      (error) => {
+        console.warn("AI fridge snapshot warning", error);
+        setLoadingFridge(false);
+      },
     );
 
     return () => unsubscribe();
-  }, [familyId]);
+  }, [familyId, firestoreResumeKey]);
 
   useEffect(() => {
     let active = true;
@@ -1426,10 +995,14 @@ export default function AiPage() {
         setFavoriteRecipes(items);
         setLoadingFavorites(false);
       },
+      (error) => {
+        console.warn("AI favorite recipes snapshot warning", error);
+        setLoadingFavorites(false);
+      },
     );
 
     return () => unsubscribe();
-  }, [familyId]);
+  }, [familyId, firestoreResumeKey]);
 
   useEffect(() => {
     if (!familyId) return;
@@ -1440,30 +1013,36 @@ export default function AiPage() {
       limit(20),
     );
 
-    const unsubscribe = onSnapshot(cookingQuery, (snapshot) => {
-      const items: CookingRecipe[] = [];
+    const unsubscribe = onSnapshot(
+      cookingQuery,
+      (snapshot) => {
+        const items: CookingRecipe[] = [];
 
-      snapshot.forEach((document) => {
-        const data = document.data();
-        items.push({
-          id: document.id,
-          recipeId: data.recipeId || document.id,
-          title: data.title || "Без названия",
-          category: data.category || "Рецепт",
-          cookingTime: data.cookingTime || "",
-          score: data.score || 0,
-          mealPlanId: data.mealPlanId || "single",
-          mealPlanTitle: data.mealPlanTitle || "Отдельные блюда",
-          mealPlanEmoji: data.mealPlanEmoji || "👨‍🍳",
-          mealPlanSubtitle: data.mealPlanSubtitle || "Будем готовить",
+        snapshot.forEach((document) => {
+          const data = document.data();
+          items.push({
+            id: document.id,
+            recipeId: data.recipeId || document.id,
+            title: data.title || "Без названия",
+            category: data.category || "Рецепт",
+            cookingTime: data.cookingTime || "",
+            score: data.score || 0,
+            mealPlanId: data.mealPlanId || "single",
+            mealPlanTitle: data.mealPlanTitle || "Отдельные блюда",
+            mealPlanEmoji: data.mealPlanEmoji || "👨‍🍳",
+            mealPlanSubtitle: data.mealPlanSubtitle || "Будем готовить",
+          });
         });
-      });
 
-      setCookingRecipes(items);
-    });
+        setCookingRecipes(items);
+      },
+      (error) => {
+        console.warn("AI cooking snapshot warning", error);
+      },
+    );
 
     return () => unsubscribe();
-  }, [familyId]);
+  }, [familyId, firestoreResumeKey]);
 
   useEffect(() => {
     const searchText = normalizeText(search);
@@ -1535,6 +1114,10 @@ export default function AiPage() {
     return `familyshop_ai_matched_recipes_${familyId || "guest"}`;
   }, [familyId]);
 
+  const suggestedRecipeById = useMemo(() => {
+    return new Map(suggestedRecipes.map((recipe) => [recipe.id, recipe]));
+  }, [suggestedRecipes]);
+
   function getSavedRecipeCache() {
     if (typeof window === "undefined") return null;
 
@@ -1571,20 +1154,36 @@ export default function AiPage() {
 
   function buildMatch(recipe: Recipe): MatchResult {
     const fridgeSet = fridgeIngredientSet;
-    const allIds = Array.from(new Set(recipe.ingredientIds || []));
-    const optionalIds = new Set(recipe.optionalIngredientIds || []);
+    const preparedInput = recipeMatchInputs.get(recipe.id);
+    const fallbackIds = preparedInput
+      ? []
+      : Array.from(new Set(recipe.ingredientIds || []));
+    const fallbackOptionalIds = preparedInput
+      ? new Set<string>()
+      : new Set(recipe.optionalIngredientIds || []);
+    const fallbackRequiredIds = preparedInput
+      ? []
+      : fallbackIds.filter((id) => !fallbackOptionalIds.has(id));
+    const idsForScore =
+      preparedInput?.idsForScore ||
+      (fallbackRequiredIds.length > 0 ? fallbackRequiredIds : fallbackIds);
 
-    const requiredIds = allIds.filter((id) => !optionalIds.has(id));
-    const idsForScore = requiredIds.length > 0 ? requiredIds : allIds;
+    const haveIds: string[] = [];
+    const missingIds: string[] = [];
 
-    const haveIds = idsForScore.filter((id) =>
-      getComparableIds(id).some((candidate) => fridgeSet.has(candidate)),
-    );
+    for (const id of idsForScore) {
+      const comparableIds =
+        preparedInput?.comparableIdsById[id] || getComparableIds(id);
+      const hasIngredient = comparableIds.some((candidate) =>
+        fridgeSet.has(candidate),
+      );
 
-    const missingIds = idsForScore.filter(
-      (id) =>
-        !getComparableIds(id).some((candidate) => fridgeSet.has(candidate)),
-    );
+      if (hasIngredient) {
+        haveIds.push(id);
+      } else {
+        missingIds.push(id);
+      }
+    }
 
     const score =
       idsForScore.length === 0
@@ -1623,32 +1222,51 @@ export default function AiPage() {
 
         const parsed = JSON.parse(saved) as {
           fridgeKey?: string;
+          matches?: CachedMatchResult[];
           recipeIds?: string[];
         };
 
+        const matches = Array.isArray(parsed.matches) ? parsed.matches : [];
         const recipeIds = Array.isArray(parsed.recipeIds)
           ? parsed.recipeIds
-          : [];
+          : matches.map((match) => match.recipeId);
 
-        if (recipeIds.length === 0) {
+        if (matches.length === 0 && recipeIds.length === 0) {
           setRecipesNeedRefresh(true);
           setMatchingRecipes(false);
           setMatchProgress(0);
           return;
         }
 
+        const canUseStoredMatches =
+          parsed.fridgeKey === fridgeSnapshotKey && matches.length > 0;
         const recipeOrder = new Map<string, number>();
         recipeIds.forEach((id, index) => recipeOrder.set(id, index));
 
-        const cachedResults = suggestedRecipes
-          .filter((recipe) => recipeOrder.has(recipe.id))
-          .map(buildMatch)
-          .filter((result) => result.total > 0)
-          .sort((a, b) => {
-            const aIndex = recipeOrder.get(a.recipe.id) ?? 999999;
-            const bIndex = recipeOrder.get(b.recipe.id) ?? 999999;
-            return aIndex - bIndex;
-          });
+        const cachedResults = canUseStoredMatches
+          ? matches
+              .map((match) => {
+                const recipe = suggestedRecipeById.get(match.recipeId);
+                if (!recipe) return null;
+
+                return {
+                  recipe,
+                  score: match.score,
+                  haveIds: match.haveIds,
+                  missingIds: match.missingIds,
+                  total: match.total,
+                } satisfies MatchResult;
+              })
+              .filter((result): result is MatchResult => Boolean(result))
+          : suggestedRecipes
+              .filter((recipe) => recipeOrder.has(recipe.id))
+              .map(buildMatch)
+              .filter((result) => result.total > 0)
+              .sort((a, b) => {
+                const aIndex = recipeOrder.get(a.recipe.id) ?? 999999;
+                const bIndex = recipeOrder.get(b.recipe.id) ?? 999999;
+                return aIndex - bIndex;
+              });
 
         setMatchedResultsState(cachedResults);
         setRecipesNeedRefresh(parsed.fridgeKey !== fridgeSnapshotKey);
@@ -1670,6 +1288,7 @@ export default function AiPage() {
     loadingFridge,
     loadingSuggested,
     suggestedRecipes,
+    suggestedRecipeById,
     recipeCacheKey,
     fridgeSnapshotKey,
   ]);
@@ -1746,6 +1365,13 @@ export default function AiPage() {
       const cachePayload = JSON.stringify({
         fridgeKey: fridgeSnapshotKey,
         recipeIds: finalResults.map((result) => result.recipe.id),
+        matches: finalResults.map((result) => ({
+          recipeId: result.recipe.id,
+          score: result.score,
+          haveIds: result.haveIds,
+          missingIds: result.missingIds,
+          total: result.total,
+        })),
         updatedAt: Date.now(),
       });
 
@@ -1762,6 +1388,7 @@ export default function AiPage() {
   }
 
   const allMatchedResults = matchedResultsState;
+  const showAdvancedBlocks = false;
 
   const suggestedResults = useMemo(() => {
     const cleanResults = allMatchedResults.filter((result) =>
@@ -1777,11 +1404,11 @@ export default function AiPage() {
       .slice(0, 7 - perfectResults.length);
 
     return [...perfectResults, ...almostResults];
-    // isRealDish is pure route-local filtering logic.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allMatchedResults]);
 
   const quickResults = useMemo(() => {
+    if (!showAdvancedBlocks) return [];
+
     const allowedKinds = new Set(["breakfast", "salad", "soup", "main"]);
 
     return allMatchedResults
@@ -1840,6 +1467,8 @@ export default function AiPage() {
   }, [allMatchedResults, recipeRefreshSeed]);
 
   const holidayResults = useMemo(() => {
+    if (!showAdvancedBlocks) return [];
+
     return sectionResults((recipe) => isHolidayRecipe(recipe), 7, "holiday");
     // sectionResults is pure route-local selection logic.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1850,6 +1479,8 @@ export default function AiPage() {
   }
 
   const mealPlans = useMemo(() => {
+    if (!showAdvancedBlocks) return [];
+
     const usableResults = allMatchedResults.filter(
       (result) =>
         result.score >= 60 &&
@@ -1984,18 +1615,24 @@ export default function AiPage() {
         result.missingIds.length === 0 &&
         result.score === 100,
     );
-    // isRealDish is pure route-local filtering logic.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allMatchedResults]);
 
   const availableRecipeKinds = useMemo(() => {
-    const counts = new Map<RecipeKind, number>();
+    const counts = new Map<RecipeKind, { total: number; ready: number }>();
 
     for (const result of allMatchedResults) {
       if (!isRealDish(result.recipe) || result.score < 25) continue;
 
-      const kind = getRecipeKind(result.recipe) as RecipeKind;
-      counts.set(kind, (counts.get(kind) || 0) + 1);
+      const kind = getRecipeKind(result.recipe);
+      const current = counts.get(kind) || { total: 0, ready: 0 };
+
+      counts.set(kind, {
+        total: current.total + 1,
+        ready:
+          result.missingIds.length === 0 && result.score === 100
+            ? current.ready + 1
+            : current.ready,
+      });
     }
 
     return (
@@ -2011,11 +1648,43 @@ export default function AiPage() {
         "other",
       ] as RecipeKind[]
     )
-      .filter((kind) => (counts.get(kind) || 0) > 0)
-      .map((kind) => ({ kind, count: counts.get(kind) || 0 }));
-    // getRecipeKind/isRealDish are pure route-local classifiers.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+      .filter((kind) => (counts.get(kind)?.total || 0) > 0)
+      .map((kind) => ({
+        kind,
+        count: counts.get(kind)?.total || 0,
+        readyCount: counts.get(kind)?.ready || 0,
+      }));
   }, [allMatchedResults]);
+
+  const categoryDeckResults = useMemo(() => {
+    const categoryMap = new Map<RecipeKind, MatchResult[]>();
+    const kinds = [
+      "breakfast",
+      "salad",
+      "soup",
+      "main",
+      "side",
+      "baking",
+      "dessert",
+      "drink",
+      "other",
+    ] as RecipeKind[];
+
+    for (const kind of kinds) {
+      categoryMap.set(
+        kind,
+        sectionResults(
+          (recipe) => getRecipeKind(recipe) === kind,
+          60,
+          `kind_${kind}`,
+        ),
+      );
+    }
+
+    return categoryMap;
+    // getRecipeKind and sectionResults are pure route-local selection logic.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allMatchedResults, recipeRefreshSeed]);
 
   const deckResults = useMemo(() => {
     const uniqueResults = new Map<string, MatchResult>();
@@ -2028,11 +1697,7 @@ export default function AiPage() {
           : activeDeckMode === "favorites"
             ? favoriteResults
             : activeDeckMode === "categories" && selectedRecipeKind
-              ? sectionResults(
-                  (recipe) => getRecipeKind(recipe) === selectedRecipeKind,
-                  60,
-                  `kind_${selectedRecipeKind}`,
-                )
+              ? categoryDeckResults.get(selectedRecipeKind) || []
               : [];
 
     for (const result of source) {
@@ -2049,10 +1714,9 @@ export default function AiPage() {
       );
       return bRandom - aRandom;
     });
-    // getRecipeKind and sectionResults are pure route-local selection logic.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeDeckMode,
+    categoryDeckResults,
     favoriteResults,
     kidsResults,
     readyResults,
@@ -2125,7 +1789,7 @@ export default function AiPage() {
     setMessage("");
   }
 
-  function showNextDeckRecipe(direction: "left" | "right" | "up" | "next") {
+  function showNextDeckRecipe(direction: SwipeDirection) {
     setSwipeDirection(direction);
 
     setDeckIndex((prev) => {
@@ -2135,32 +1799,12 @@ export default function AiPage() {
   }
 
   function showPrevDeckRecipe() {
-    setSwipeDirection("right");
+    setSwipeDirection("left");
 
     setDeckIndex((prev) => {
       if (deckResults.length === 0) return 0;
       return (prev - 1 + deckResults.length) % deckResults.length;
     });
-  }
-
-  function handleRecipeDragEnd(result: MatchResult, info: PanInfo) {
-    // Слева направо — следующий рецепт.
-    if (info.offset.x > 90) {
-      showNextDeckRecipe("right");
-      return;
-    }
-
-    // Справа налево — предыдущий рецепт.
-    if (info.offset.x < -90) {
-      showPrevDeckRecipe();
-      return;
-    }
-
-    // Сверху вниз — добавить в избранное.
-    if (info.offset.y > 110) {
-      void toggleFavoriteRecipe(result.recipe);
-      showNextDeckRecipe("up");
-    }
   }
 
   async function toggleFavoriteRecipe(recipe: Recipe) {
@@ -2785,327 +2429,67 @@ export default function AiPage() {
 
   function openDeckMode(mode: CookDeckMode) {
     setActiveDeckMode(mode);
-    if (mode !== "categories") {
-      setSelectedRecipeKind(null);
-    }
+    setSelectedRecipeKind(null);
     setDeckIndex(0);
     setShowDeckModal(true);
   }
 
+  function closeDeckMode() {
+    setShowDeckModal(false);
+    setSelectedRecipeKind(null);
+    setDeckIndex(0);
+  }
+
   function renderDeckModeLauncher() {
-    const tiles: Array<{
-      id: CookDeckMode;
-      icon: string;
-      label: string;
-      count: number | string;
-      hint: string;
-      iconClass: string;
-    }> = [
-      {
-        id: "ready",
-        icon: "✅",
-        label: "Можно",
-        count: readyResults.length || "—",
-        hint: "готовить сейчас",
-        iconClass: "bg-emerald-100 text-emerald-700",
-      },
-      {
-        id: "kids",
-        icon: "👶",
-        label: "Детское",
-        count: kidsResults.length,
-        hint: "для семьи",
-        iconClass: "bg-amber-100 text-amber-700",
-      },
-      {
-        id: "categories",
-        icon: "▦",
-        label: "Категории",
-        count: availableRecipeKinds.length || "—",
-        hint: "супы, второе...",
-        iconClass: "bg-violet-100 text-violet-700",
-      },
-      {
-        id: "favorites",
-        icon: "⭐",
-        label: "Избранное",
-        count: favoriteResults.length,
-        hint: "любимые блюда",
-        iconClass: "bg-yellow-100 text-yellow-700",
-      },
-    ];
-
     return (
-      <div className="grid grid-cols-2 gap-3">
-        {tiles.map((tile) => (
-          <motion.button
-            key={tile.id}
-            type="button"
-            whileTap={{ scale: 0.97 }}
-            onClick={() => openDeckMode(tile.id)}
-            className="min-h-[122px] rounded-[28px] bg-white p-4 text-left shadow-sm ring-1 ring-slate-100"
-          >
-            <div className="flex items-start justify-between gap-2">
-              <span
-                className={`flex h-12 w-12 items-center justify-center rounded-2xl text-2xl ${tile.iconClass}`}
-              >
-                {tile.icon}
-              </span>
-              <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black text-slate-500">
-                {tile.count}
-              </span>
-            </div>
-
-            <h3 className="mt-4 text-lg font-black leading-tight text-slate-950">
-              {tile.label}
-            </h3>
-            <p className="mt-1 text-xs font-semibold text-slate-400">
-              {tile.hint}
-            </p>
-          </motion.button>
-        ))}
-      </div>
+      <DeckModeLauncher
+        readyCount={readyResults.length}
+        kidsCount={kidsResults.length}
+        categoriesCount={availableRecipeKinds.length}
+        favoritesCount={favoriteResults.length}
+        onOpenMode={openDeckMode}
+      />
     );
   }
-
   function renderSwipeRecipeDeck() {
-    const result = currentDeckResult;
-    const recipe = result?.recipe;
-
-    if (activeDeckMode === "categories" && !selectedRecipeKind) {
-      return (
-        <div className="flex min-h-[100dvh] flex-col bg-slate-950 px-5 py-6 text-white">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <div>
-              <p className="text-sm font-bold uppercase tracking-wide text-emerald-300">
-                Блок меню
-              </p>
-              <h2 className="mt-1 text-2xl font-black">Выбери категорию</h2>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setShowDeckModal(false)}
-              className="flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-2xl font-black text-white"
-            >
-              ✕
-            </button>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 overflow-y-auto pb-8">
-            {availableRecipeKinds.map(({ kind, count }) => (
-              <motion.button
-                key={kind}
-                type="button"
-                whileTap={{ scale: 0.97 }}
-                onClick={() => {
-                  setSelectedRecipeKind(kind);
-                  setDeckIndex(0);
-                }}
-                className="min-h-[116px] rounded-[26px] bg-white/10 p-4 text-left ring-1 ring-white/10"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <span className="text-2xl">
-                    {kind === "breakfast"
-                      ? "🍳"
-                      : kind === "salad"
-                        ? "🥗"
-                        : kind === "soup"
-                          ? "🍲"
-                          : kind === "main"
-                            ? "🍽"
-                            : kind === "side"
-                              ? "🍚"
-                              : kind === "baking"
-                                ? "🥟"
-                                : kind === "dessert"
-                                  ? "🍰"
-                                  : kind === "drink"
-                                    ? "☕"
-                                    : "📌"}
-                  </span>
-                  <span className="rounded-full bg-white/10 px-2.5 py-1 text-xs font-black text-slate-200">
-                    {count}
-                  </span>
-                </div>
-                <h3 className="mt-4 text-base font-black leading-tight text-white">
-                  {recipeKindLabels[kind]}
-                </h3>
-                <p className="mt-1 text-xs font-semibold text-slate-400">
-                  Открыть блок меню
-                </p>
-              </motion.button>
-            ))}
-          </div>
-        </div>
-      );
-    }
-
-    if (loadingSuggested || matchingRecipes) {
-      return (
-        <div className="flex min-h-[100dvh] items-center justify-center bg-slate-950 p-6 text-center text-sm font-semibold text-slate-300">
-          Подбираю рецепты по продуктам дома...
-        </div>
-      );
-    }
-
-    if (!result || !recipe) {
-      return (
-        <div className="flex min-h-[100dvh] flex-col justify-center bg-slate-950 p-6 text-white">
-          <button
-            type="button"
-            onClick={() => setShowDeckModal(false)}
-            className="absolute right-5 top-5 flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-2xl font-black"
-          >
-            ✕
-          </button>
-          <h2 className="text-2xl font-black">Пока нет рецептов</h2>
-          <p className="mt-2 text-sm text-slate-300">
-            Добавь продукты в “Есть дома” или попробуй другой раздел.
-          </p>
-        </div>
-      );
-    }
-
     return (
-      <div className="min-h-[100dvh] bg-slate-950 text-white">
-        <div className="pointer-events-none fixed inset-0 z-0 bg-[radial-gradient(circle_at_20%_15%,rgba(16,185,129,0.22),transparent_34%),radial-gradient(circle_at_90%_85%,rgba(59,130,246,0.12),transparent_32%)]" />
-
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={`${activeDeckMode}_${selectedRecipeKind || "none"}_${deckIndex}_${recipe.id}`}
-            drag
-            dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
-            dragElastic={0.18}
-            onDragEnd={(_, info) => handleRecipeDragEnd(result, info)}
-            initial={{ opacity: 0, x: swipeDirection === "right" ? 36 : swipeDirection === "left" ? -36 : 0, y: 18, scale: 0.98 }}
-            animate={{ opacity: 1, x: 0, y: 0, scale: 1, rotate: 0 }}
-            exit={{
-              opacity: 0,
-              x: swipeDirection === "right" ? 130 : swipeDirection === "left" ? -130 : 0,
-              y: swipeDirection === "up" ? -120 : 20,
-              rotate: swipeDirection === "right" ? 7 : swipeDirection === "left" ? -7 : 0,
-              scale: 0.97,
-            }}
-            transition={{ duration: 0.2 }}
-            className="relative z-10 flex min-h-[100dvh] cursor-grab flex-col active:cursor-grabbing"
-          >
-            <div className="flex items-start justify-between gap-3 px-6 pt-7">
-              <div>
-                <p className="text-sm font-black uppercase tracking-wide text-emerald-300">
-                  Блок меню
-                </p>
-                <p className="mt-8 text-lg font-semibold text-emerald-200">
-                  {recipe.category || "Рецепт"}
-                </p>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setShowDeckModal(false)}
-                className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-white/10 text-3xl font-black text-white backdrop-blur"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="flex-1 px-6 pt-5">
-              <div className="flex items-start justify-between gap-4">
-                <h2 className="min-w-0 flex-1 break-words text-[42px] font-black leading-[1.04] tracking-tight text-white">
-                  {recipe.title}
-                </h2>
-
-                <div className="shrink-0 rounded-[24px] bg-white/10 px-4 py-4 text-center backdrop-blur">
-                  <div className="text-xs font-black uppercase text-emerald-100">
-                    готовность
-                  </div>
-                  <div className="mt-1 text-4xl font-black">{result.score}%</div>
-                </div>
-              </div>
-
-              <div className="mt-8 grid grid-cols-3 gap-3 text-center">
-                <div className="rounded-[24px] bg-white/10 px-2 py-5 backdrop-blur">
-                  <div className="text-4xl font-black">{result.haveIds.length}</div>
-                  <div className="mt-1 text-sm text-slate-300">есть дома</div>
-                </div>
-                <div className="rounded-[24px] bg-white/10 px-2 py-5 backdrop-blur">
-                  <div className="text-4xl font-black">{result.missingIds.length}</div>
-                  <div className="mt-1 text-sm text-slate-300">не хватает</div>
-                </div>
-                <div className="rounded-[24px] bg-white/10 px-2 py-5 backdrop-blur">
-                  <div className="text-xl font-black leading-tight">{getRecipeTimeLabel(recipe)}</div>
-                  <div className="mt-1 text-sm text-slate-300">время</div>
-                </div>
-              </div>
-
-              <div className="mt-8 rounded-[24px] bg-emerald-500/25 px-5 py-4 text-lg font-black leading-7 text-emerald-50">
-                {result.missingIds.length > 0
-                  ? `Не хватает: ${result.missingIds.length} ингредиент(ов)`
-                  : "Всё нужное уже есть дома."}
-              </div>
-
-              <div className="mt-7 rounded-[24px] border border-white/10 bg-white/5 px-4 py-3 text-center text-base font-semibold text-slate-200">
-                ← назад · ↓ в избранное · → дальше
-              </div>
-
-              <div className="mt-7 grid grid-cols-[1fr_0.8fr] gap-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSelectedRecipe(result);
-                    setMessage("");
-                  }}
-                  className="rounded-[22px] bg-white px-4 py-4 text-base font-black text-slate-950"
-                >
-                  Открыть рецепт
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() =>
-                    result.missingIds.length > 0
-                      ? addMissingToShopping(result)
-                      : startCooking(result)
-                  }
-                  disabled={addingRecipeId !== null}
-                  className="rounded-[22px] bg-green-500 px-4 py-4 text-base font-black text-white disabled:opacity-60"
-                >
-                  {result.missingIds.length > 0 ? "В покупки" : "Готовить"}
-                </button>
-              </div>
-            </div>
-
-            <div className="px-6 pb-8 pt-6">
-              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-slate-300">
-                <div className="text-left text-sm leading-6">
-                  <div className="text-3xl text-emerald-300">‹</div>
-                  <div>Свайп влево</div>
-                  <div className="text-slate-500">назад</div>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  <span className="h-3 w-3 rounded-full bg-emerald-400" />
-                  <span className="h-3 w-3 rounded-full bg-white/35" />
-                  <span className="h-3 w-3 rounded-full bg-white/35" />
-                </div>
-
-                <div className="text-right text-sm leading-6">
-                  <div className="text-3xl text-emerald-300">›</div>
-                  <div>Свайп вправо</div>
-                  <div className="text-slate-500">дальше</div>
-                </div>
-              </div>
-
-              <div className="mt-4 text-center text-sm font-semibold text-slate-300">
-                ↓ Свайп вниз — в избранное
-              </div>
-            </div>
-          </motion.div>
-        </AnimatePresence>
-      </div>
+      <SwipeRecipeDeck
+        activeDeckMode={activeDeckMode}
+        selectedRecipeKind={selectedRecipeKind}
+        deckIndex={deckIndex}
+        swipeDirection={swipeDirection}
+        currentDeckResult={currentDeckResult}
+        favoriteResults={favoriteResults}
+        availableRecipeKinds={availableRecipeKinds}
+        loadingFavorites={loadingFavorites}
+        loadingSuggested={loadingSuggested}
+        matchingRecipes={matchingRecipes}
+        addingRecipeId={addingRecipeId}
+        onClose={closeDeckMode}
+        onSelectRecipeKind={(kind) => {
+          setSelectedRecipeKind(kind);
+          setDeckIndex(0);
+        }}
+        onNext={() => showNextDeckRecipe("right")}
+        onPrevious={showPrevDeckRecipe}
+        onFavoriteSwipe={(result) => {
+          void toggleFavoriteRecipe(result.recipe);
+          showNextDeckRecipe("down");
+        }}
+        onOpenRecipe={(result) => {
+          setSelectedRecipe(result);
+          setMessage("");
+        }}
+        onAddMissingToShopping={addMissingToShopping}
+        onStartCooking={startCooking}
+        renderRecipeCard={(result) => (
+          <RecipeCard key={result.recipe.id} result={result} />
+        )}
+        getRecipeTimeLabel={getRecipeTimeLabel}
+        getProductLabel={getProductLabel}
+      />
     );
   }
-
   function renderRecipeListBlock({
     title,
     count,
@@ -3148,7 +2532,6 @@ export default function AiPage() {
   }
 
   const isSearching = normalizeText(search).length >= 2;
-  const showAdvancedBlocks = false;
 
   const cookingGroups = useMemo(() => {
     const groups = new Map<

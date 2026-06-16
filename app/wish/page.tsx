@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import BottomNav from "../../components/BottomNav";
 import { useFamilyAuth } from "../../components/AuthProvider";
 import { db } from "../../lib/firebase";
+import { useFirestoreResumeKey } from "../../lib/useFirestoreResumeKey";
 import {
   addDoc,
   collection,
@@ -114,6 +115,7 @@ function fileToBase64(file: File) {
 
 export default function WishPage() {
   const { familyId, appUser } = useFamilyAuth();
+  const firestoreResumeKey = useFirestoreResumeKey();
 
   const [wishItems, setWishItems] = useState<WishItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -162,21 +164,27 @@ export default function WishPage() {
   useEffect(() => {
     if (!familyId) return;
 
-    const unsubscribe = onSnapshot(doc(db, "families", familyId), (snapshot) => {
-      const data = snapshot.data();
+    const unsubscribe = onSnapshot(
+      doc(db, "families", familyId),
+      (snapshot) => {
+        const data = snapshot.data();
 
-      const nextNames = {
-        maleName: data?.wishMaleName || "",
-        femaleName: data?.wishFemaleName || "",
-        childName: data?.wishChildName || "",
-      };
+        const nextNames = {
+          maleName: data?.wishMaleName || "",
+          femaleName: data?.wishFemaleName || "",
+          childName: data?.wishChildName || "",
+        };
 
-      setNames(nextNames);
-      setDraftNames(nextNames);
-    });
+        setNames(nextNames);
+        setDraftNames(nextNames);
+      },
+      (error) => {
+        console.warn("Wish family snapshot warning", error);
+      },
+    );
 
     return () => unsubscribe();
-  }, [familyId]);
+  }, [familyId, firestoreResumeKey]);
 
   useEffect(() => {
     if (!familyId) return;
@@ -222,10 +230,14 @@ export default function WishPage() {
         setWishItems(items);
         setLoading(false);
       },
+      (error) => {
+        console.warn("Wish snapshot warning", error);
+        setLoading(false);
+      },
     );
 
     return () => unsubscribe();
-  }, [familyId]);
+  }, [familyId, firestoreResumeKey]);
 
   const filteredItems = useMemo(() => {
     if (activeSection === "all") return wishItems;
