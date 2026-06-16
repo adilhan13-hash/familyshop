@@ -447,6 +447,7 @@ export default function AiPage() {
   const [showQuick, setShowQuick] = useState(false);
   const [showKids, setShowKids] = useState(false);
   const [activeDeckMode, setActiveDeckMode] = useState<CookDeckMode>("ready");
+  const [showDeckModal, setShowDeckModal] = useState(false);
   const [selectedRecipeKind, setSelectedRecipeKind] =
     useState<RecipeKind | null>(null);
   const [deckIndex, setDeckIndex] = useState(0);
@@ -2024,13 +2025,15 @@ export default function AiPage() {
         ? readyResults
         : activeDeckMode === "kids"
           ? kidsResults
-          : activeDeckMode === "categories" && selectedRecipeKind
-            ? sectionResults(
-                (recipe) => getRecipeKind(recipe) === selectedRecipeKind,
-                60,
-                `kind_${selectedRecipeKind}`,
-              )
-            : [];
+          : activeDeckMode === "favorites"
+            ? favoriteResults
+            : activeDeckMode === "categories" && selectedRecipeKind
+              ? sectionResults(
+                  (recipe) => getRecipeKind(recipe) === selectedRecipeKind,
+                  60,
+                  `kind_${selectedRecipeKind}`,
+                )
+              : [];
 
     for (const result of source) {
       uniqueResults.set(result.recipe.id, result);
@@ -2050,6 +2053,7 @@ export default function AiPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeDeckMode,
+    favoriteResults,
     kidsResults,
     readyResults,
     recipeRefreshSeed,
@@ -2131,7 +2135,7 @@ export default function AiPage() {
   }
 
   function showPrevDeckRecipe() {
-    setSwipeDirection("left");
+    setSwipeDirection("right");
 
     setDeckIndex((prev) => {
       if (deckResults.length === 0) return 0;
@@ -2140,25 +2144,20 @@ export default function AiPage() {
   }
 
   function handleRecipeDragEnd(result: MatchResult, info: PanInfo) {
-    const absX = Math.abs(info.offset.x);
-    const absY = Math.abs(info.offset.y);
-
-    if (absX < 80 && absY < 80) return;
-
     // Слева направо — следующий рецепт.
-    if (absX > absY && info.offset.x > 90) {
+    if (info.offset.x > 90) {
       showNextDeckRecipe("right");
       return;
     }
 
     // Справа налево — предыдущий рецепт.
-    if (absX > absY && info.offset.x < -90) {
+    if (info.offset.x < -90) {
       showPrevDeckRecipe();
       return;
     }
 
     // Сверху вниз — добавить в избранное.
-    if (absY > absX && info.offset.y > 110) {
+    if (info.offset.y > 110) {
       void toggleFavoriteRecipe(result.recipe);
       showNextDeckRecipe("up");
     }
@@ -2784,289 +2783,325 @@ export default function AiPage() {
     );
   }
 
-  function renderSwipeRecipeDeck() {
-    const result = currentDeckResult;
-    const recipe = result?.recipe;
-    const tabs: Array<{
+  function openDeckMode(mode: CookDeckMode) {
+    setActiveDeckMode(mode);
+    if (mode !== "categories") {
+      setSelectedRecipeKind(null);
+    }
+    setDeckIndex(0);
+    setShowDeckModal(true);
+  }
+
+  function renderDeckModeLauncher() {
+    const tiles: Array<{
       id: CookDeckMode;
+      icon: string;
       label: string;
       count: number | string;
+      hint: string;
+      iconClass: string;
     }> = [
-      { id: "ready", label: "✅ Можно", count: readyResults.length || "—" },
-      { id: "kids", label: "👶 Детское", count: kidsResults.length },
+      {
+        id: "ready",
+        icon: "✅",
+        label: "Можно",
+        count: readyResults.length || "—",
+        hint: "готовить сейчас",
+        iconClass: "bg-emerald-100 text-emerald-700",
+      },
+      {
+        id: "kids",
+        icon: "👶",
+        label: "Детское",
+        count: kidsResults.length,
+        hint: "для семьи",
+        iconClass: "bg-amber-100 text-amber-700",
+      },
       {
         id: "categories",
-        label: "▦ Категории",
+        icon: "▦",
+        label: "Категории",
         count: availableRecipeKinds.length || "—",
+        hint: "супы, второе...",
+        iconClass: "bg-violet-100 text-violet-700",
       },
-      { id: "favorites", label: "⭐ Избранное", count: favoriteResults.length },
+      {
+        id: "favorites",
+        icon: "⭐",
+        label: "Избранное",
+        count: favoriteResults.length,
+        hint: "любимые блюда",
+        iconClass: "bg-yellow-100 text-yellow-700",
+      },
     ];
 
     return (
-      <div className="space-y-4">
-        <div className="-mx-1 overflow-x-auto pb-1">
-          <div className="flex w-max gap-2 px-1">
-            {tabs.map((tab) => {
-              const active = activeDeckMode === tab.id;
-
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => {
-                    setActiveDeckMode(tab.id);
-                    if (tab.id !== "categories") {
-                      setSelectedRecipeKind(null);
-                    }
-                    setDeckIndex(0);
-                  }}
-                  className={`shrink-0 rounded-full px-4 py-3 text-sm font-black shadow-sm transition active:scale-[0.98] ${
-                    active
-                      ? "bg-slate-950 text-white ring-1 ring-slate-950"
-                      : "bg-white text-slate-700 ring-1 ring-slate-100"
-                  }`}
-                >
-                  {tab.label} <span className="ml-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">{tab.count}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {activeDeckMode === "categories" ? (
-          <div className="flex gap-2 overflow-x-auto pb-1">
-            {availableRecipeKinds.map(({ kind, count }) => {
-              const active = selectedRecipeKind === kind;
-
-              return (
-                <button
-                  key={kind}
-                  type="button"
-                  onClick={() => {
-                    setSelectedRecipeKind(kind);
-                    setDeckIndex(0);
-                  }}
-                  className={`shrink-0 rounded-full px-4 py-2.5 text-sm font-black shadow-sm transition active:scale-[0.98] ${
-                    active
-                      ? "bg-green-500 text-white ring-1 ring-green-500"
-                      : "bg-white text-slate-600 ring-1 ring-slate-100"
-                  }`}
-                >
-                  {recipeKindLabels[kind]} · {count}
-                </button>
-              );
-            })}
-          </div>
-        ) : null}
-
-        {activeDeckMode === "favorites" ? (
-          <div className="rounded-3xl bg-white p-4 shadow-sm ring-1 ring-slate-100">
-            <h2 className="text-xl font-bold text-slate-900">Избранное</h2>
-
-            {loadingFavorites ? (
-              <p className="mt-3 text-sm text-slate-500">Загрузка...</p>
-            ) : favoriteResults.length === 0 ? (
-              <p className="mt-3 text-sm text-slate-500">
-                Пока нет избранных рецептов. Добавляй понравившиеся свайпом или
-                кнопкой.
-              </p>
-            ) : (
-              <div className="mt-4 space-y-3">
-                {favoriteResults.map((favorite) => (
-                  <RecipeCard key={favorite.recipe.id} result={favorite} />
-                ))}
-              </div>
-            )}
-          </div>
-        ) : activeDeckMode === "categories" && !selectedRecipeKind ? (
-          <div className="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
-            <h2 className="text-xl font-bold text-slate-900">
-              Выбери категорию
-            </h2>
-            <p className="mt-2 text-sm text-slate-500">
-              После выбора категории откроется свайп-подборка рецептов этого
-              типа.
-            </p>
-          </div>
-        ) : (
-          <>
-        {loadingSuggested || matchingRecipes ? (
-          <div className="rounded-3xl bg-white p-5 text-sm font-medium text-slate-500 shadow-sm ring-1 ring-slate-100">
-            Подбираю рецепты по продуктам дома...
-          </div>
-        ) : !result || !recipe ? (
-          <div className="rounded-3xl bg-white p-5 shadow-sm ring-1 ring-slate-100">
-            <h2 className="text-xl font-bold text-slate-900">
-              Пока нет рецептов
-            </h2>
-            <p className="mt-2 text-sm text-slate-500">
-              Добавь продукты в “Есть дома” или попробуй другой режим.
-            </p>
-
-          </div>
-        ) : (
-          <>
-            <div className="relative min-h-[500px] overflow-hidden rounded-[34px] bg-gradient-to-b from-slate-200 to-slate-100 p-2">
-              <div className="pointer-events-none absolute inset-x-8 top-4 h-24 rounded-full bg-white/70 blur-2xl" />
-
-              <AnimatePresence mode="wait">
-                <motion.div
-                  key={`${activeDeckMode}_${deckIndex}_${recipe.id}`}
-                  drag
-                  dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
-                  dragElastic={0.2}
-                  onDragEnd={(_, info) => handleRecipeDragEnd(result, info)}
-                  initial={{ opacity: 0, y: 18, scale: 0.97 }}
-                  animate={{ opacity: 1, y: 0, scale: 1, rotate: 0 }}
-                  exit={{
-                    opacity: 0,
-                    x:
-                      swipeDirection === "right"
-                        ? 150
-                        : swipeDirection === "left"
-                          ? -150
-                          : 0,
-                    y: swipeDirection === "up" ? 130 : 18,
-                    rotate:
-                      swipeDirection === "right"
-                        ? 7
-                        : swipeDirection === "left"
-                          ? -7
-                          : 0,
-                    scale: 0.97,
-                  }}
-                  transition={{ duration: 0.18 }}
-                  className="absolute inset-x-2 top-2 cursor-grab active:cursor-grabbing"
-                >
-                  <div
-                    className={`overflow-hidden rounded-[30px] p-5 text-white shadow-xl ${
-                      result.score === 100
-                        ? "bg-gradient-to-br from-emerald-600 via-slate-900 to-slate-950"
-                        : result.score >= 70
-                          ? "bg-gradient-to-br from-orange-500 via-slate-900 to-slate-950"
-                          : "bg-gradient-to-br from-slate-700 via-slate-900 to-slate-950"
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="inline-flex max-w-full items-center gap-2 rounded-full bg-white/12 px-3 py-1 text-xs font-semibold text-white/85 ring-1 ring-white/10">
-                          <span>🍽</span>
-                          <span className="truncate">{recipe.category || "Рецепт"}</span>
-                        </div>
-
-                        <h2 className="mt-4 line-clamp-4 break-words text-[32px] font-black leading-[1.04] tracking-tight">
-                          {recipe.title}
-                        </h2>
-                      </div>
-
-                      <div className="shrink-0 rounded-3xl bg-white/12 px-3 py-3 text-center ring-1 ring-white/10">
-                        <div className="text-[10px] font-bold uppercase tracking-wide text-white/60">
-                          готово
-                        </div>
-                        <div className="text-2xl font-black">{result.score}%</div>
-                      </div>
-                    </div>
-
-                    <div className="mt-5 h-2 overflow-hidden rounded-full bg-white/15">
-                      <div
-                        className="h-full rounded-full bg-white transition-all"
-                        style={{ width: `${result.score}%` }}
-                      />
-                    </div>
-
-                    <div className="mt-5 grid grid-cols-3 gap-2 text-center">
-                      <div className="rounded-3xl bg-white/12 px-2 py-3 ring-1 ring-white/10">
-                        <div className="text-2xl font-black">
-                          {result.haveIds.length}
-                        </div>
-                        <div className="text-[11px] font-medium text-white/60">
-                          есть дома
-                        </div>
-                      </div>
-
-                      <div className="rounded-3xl bg-white/12 px-2 py-3 ring-1 ring-white/10">
-                        <div className="text-2xl font-black">
-                          {result.missingIds.length}
-                        </div>
-                        <div className="text-[11px] font-medium text-white/60">
-                          не хватает
-                        </div>
-                      </div>
-
-                      <div className="rounded-3xl bg-white/12 px-2 py-3 ring-1 ring-white/10">
-                        <div className="line-clamp-1 text-sm font-black leading-tight">
-                          {getRecipeTimeLabel(recipe)}
-                        </div>
-                        <div className="text-[11px] font-medium text-white/60">время</div>
-                      </div>
-                    </div>
-
-                    <div className="mt-5 rounded-3xl bg-white/10 p-4 ring-1 ring-white/10">
-                      {result.missingIds.length > 0 ? (
-                        <>
-                          <p className="text-xs font-bold uppercase tracking-wide text-orange-100/80">
-                            Нужно докупить
-                          </p>
-                          <p className="mt-2 line-clamp-2 text-sm leading-6 text-white/90">
-                            {result.missingIds
-                              .slice(0, 4)
-                              .map((id) => getProductLabel(id))
-                              .join(", ")}
-                            {result.missingIds.length > 4 ? "..." : ""}
-                          </p>
-                        </>
-                      ) : (
-                        <p className="text-sm font-bold leading-6 text-green-100">
-                          ✅ Всё нужное уже есть дома. Можно готовить без покупок.
-                        </p>
-                      )}
-                    </div>
-
-                    {recipe.description ? (
-                      <p className="mt-4 line-clamp-3 text-sm leading-6 text-white/70">
-                        {recipe.description}
-                      </p>
-                    ) : null}
-
-                    <div className="mt-5 rounded-3xl bg-black/15 px-4 py-3 text-center text-xs font-bold text-white/70 ring-1 ring-white/10">
-                      ← назад · ↓ в избранное · → дальше
-                    </div>
-
-                    <div className="mt-4 grid grid-cols-[1fr_1fr] gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setSelectedRecipe(result);
-                          setMessage("");
-                        }}
-                        className="rounded-2xl bg-white px-4 py-3 text-sm font-black text-slate-900 shadow-sm active:scale-[0.98]"
-                      >
-                        Открыть
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() =>
-                          result.missingIds.length > 0
-                            ? addMissingToShopping(result)
-                            : startCooking(result)
-                        }
-                        disabled={addingRecipeId !== null}
-                        className="rounded-2xl bg-green-500 px-4 py-3 text-sm font-black text-white shadow-sm disabled:opacity-60 active:scale-[0.98]"
-                      >
-                        {result.missingIds.length > 0 ? "В покупки" : "Готовить"}
-                      </button>
-                    </div>
-                  </div>
-                </motion.div>
-              </AnimatePresence>
+      <div className="grid grid-cols-2 gap-3">
+        {tiles.map((tile) => (
+          <motion.button
+            key={tile.id}
+            type="button"
+            whileTap={{ scale: 0.97 }}
+            onClick={() => openDeckMode(tile.id)}
+            className="min-h-[122px] rounded-[28px] bg-white p-4 text-left shadow-sm ring-1 ring-slate-100"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <span
+                className={`flex h-12 w-12 items-center justify-center rounded-2xl text-2xl ${tile.iconClass}`}
+              >
+                {tile.icon}
+              </span>
+              <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black text-slate-500">
+                {tile.count}
+              </span>
             </div>
 
+            <h3 className="mt-4 text-lg font-black leading-tight text-slate-950">
+              {tile.label}
+            </h3>
+            <p className="mt-1 text-xs font-semibold text-slate-400">
+              {tile.hint}
+            </p>
+          </motion.button>
+        ))}
+      </div>
+    );
+  }
 
-          </>
-        )}
-          </>
-        )}
+  function renderSwipeRecipeDeck() {
+    const result = currentDeckResult;
+    const recipe = result?.recipe;
+
+    if (activeDeckMode === "categories" && !selectedRecipeKind) {
+      return (
+        <div className="flex min-h-[100dvh] flex-col bg-slate-950 px-5 py-6 text-white">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-bold uppercase tracking-wide text-emerald-300">
+                Блок меню
+              </p>
+              <h2 className="mt-1 text-2xl font-black">Выбери категорию</h2>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowDeckModal(false)}
+              className="flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-2xl font-black text-white"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 overflow-y-auto pb-8">
+            {availableRecipeKinds.map(({ kind, count }) => (
+              <motion.button
+                key={kind}
+                type="button"
+                whileTap={{ scale: 0.97 }}
+                onClick={() => {
+                  setSelectedRecipeKind(kind);
+                  setDeckIndex(0);
+                }}
+                className="min-h-[116px] rounded-[26px] bg-white/10 p-4 text-left ring-1 ring-white/10"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <span className="text-2xl">
+                    {kind === "breakfast"
+                      ? "🍳"
+                      : kind === "salad"
+                        ? "🥗"
+                        : kind === "soup"
+                          ? "🍲"
+                          : kind === "main"
+                            ? "🍽"
+                            : kind === "side"
+                              ? "🍚"
+                              : kind === "baking"
+                                ? "🥟"
+                                : kind === "dessert"
+                                  ? "🍰"
+                                  : kind === "drink"
+                                    ? "☕"
+                                    : "📌"}
+                  </span>
+                  <span className="rounded-full bg-white/10 px-2.5 py-1 text-xs font-black text-slate-200">
+                    {count}
+                  </span>
+                </div>
+                <h3 className="mt-4 text-base font-black leading-tight text-white">
+                  {recipeKindLabels[kind]}
+                </h3>
+                <p className="mt-1 text-xs font-semibold text-slate-400">
+                  Открыть блок меню
+                </p>
+              </motion.button>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    if (loadingSuggested || matchingRecipes) {
+      return (
+        <div className="flex min-h-[100dvh] items-center justify-center bg-slate-950 p-6 text-center text-sm font-semibold text-slate-300">
+          Подбираю рецепты по продуктам дома...
+        </div>
+      );
+    }
+
+    if (!result || !recipe) {
+      return (
+        <div className="flex min-h-[100dvh] flex-col justify-center bg-slate-950 p-6 text-white">
+          <button
+            type="button"
+            onClick={() => setShowDeckModal(false)}
+            className="absolute right-5 top-5 flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-2xl font-black"
+          >
+            ✕
+          </button>
+          <h2 className="text-2xl font-black">Пока нет рецептов</h2>
+          <p className="mt-2 text-sm text-slate-300">
+            Добавь продукты в “Есть дома” или попробуй другой раздел.
+          </p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="min-h-[100dvh] bg-slate-950 text-white">
+        <div className="pointer-events-none fixed inset-0 z-0 bg-[radial-gradient(circle_at_20%_15%,rgba(16,185,129,0.22),transparent_34%),radial-gradient(circle_at_90%_85%,rgba(59,130,246,0.12),transparent_32%)]" />
+
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={`${activeDeckMode}_${selectedRecipeKind || "none"}_${deckIndex}_${recipe.id}`}
+            drag
+            dragConstraints={{ left: 0, right: 0, top: 0, bottom: 0 }}
+            dragElastic={0.18}
+            onDragEnd={(_, info) => handleRecipeDragEnd(result, info)}
+            initial={{ opacity: 0, x: swipeDirection === "right" ? 36 : swipeDirection === "left" ? -36 : 0, y: 18, scale: 0.98 }}
+            animate={{ opacity: 1, x: 0, y: 0, scale: 1, rotate: 0 }}
+            exit={{
+              opacity: 0,
+              x: swipeDirection === "right" ? 130 : swipeDirection === "left" ? -130 : 0,
+              y: swipeDirection === "up" ? -120 : 20,
+              rotate: swipeDirection === "right" ? 7 : swipeDirection === "left" ? -7 : 0,
+              scale: 0.97,
+            }}
+            transition={{ duration: 0.2 }}
+            className="relative z-10 flex min-h-[100dvh] cursor-grab flex-col active:cursor-grabbing"
+          >
+            <div className="flex items-start justify-between gap-3 px-6 pt-7">
+              <div>
+                <p className="text-sm font-black uppercase tracking-wide text-emerald-300">
+                  Блок меню
+                </p>
+                <p className="mt-8 text-lg font-semibold text-emerald-200">
+                  {recipe.category || "Рецепт"}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowDeckModal(false)}
+                className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-white/10 text-3xl font-black text-white backdrop-blur"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex-1 px-6 pt-5">
+              <div className="flex items-start justify-between gap-4">
+                <h2 className="min-w-0 flex-1 break-words text-[42px] font-black leading-[1.04] tracking-tight text-white">
+                  {recipe.title}
+                </h2>
+
+                <div className="shrink-0 rounded-[24px] bg-white/10 px-4 py-4 text-center backdrop-blur">
+                  <div className="text-xs font-black uppercase text-emerald-100">
+                    готовность
+                  </div>
+                  <div className="mt-1 text-4xl font-black">{result.score}%</div>
+                </div>
+              </div>
+
+              <div className="mt-8 grid grid-cols-3 gap-3 text-center">
+                <div className="rounded-[24px] bg-white/10 px-2 py-5 backdrop-blur">
+                  <div className="text-4xl font-black">{result.haveIds.length}</div>
+                  <div className="mt-1 text-sm text-slate-300">есть дома</div>
+                </div>
+                <div className="rounded-[24px] bg-white/10 px-2 py-5 backdrop-blur">
+                  <div className="text-4xl font-black">{result.missingIds.length}</div>
+                  <div className="mt-1 text-sm text-slate-300">не хватает</div>
+                </div>
+                <div className="rounded-[24px] bg-white/10 px-2 py-5 backdrop-blur">
+                  <div className="text-xl font-black leading-tight">{getRecipeTimeLabel(recipe)}</div>
+                  <div className="mt-1 text-sm text-slate-300">время</div>
+                </div>
+              </div>
+
+              <div className="mt-8 rounded-[24px] bg-emerald-500/25 px-5 py-4 text-lg font-black leading-7 text-emerald-50">
+                {result.missingIds.length > 0
+                  ? `Не хватает: ${result.missingIds.length} ингредиент(ов)`
+                  : "Всё нужное уже есть дома."}
+              </div>
+
+              <div className="mt-7 rounded-[24px] border border-white/10 bg-white/5 px-4 py-3 text-center text-base font-semibold text-slate-200">
+                ← назад · ↓ в избранное · → дальше
+              </div>
+
+              <div className="mt-7 grid grid-cols-[1fr_0.8fr] gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedRecipe(result);
+                    setMessage("");
+                  }}
+                  className="rounded-[22px] bg-white px-4 py-4 text-base font-black text-slate-950"
+                >
+                  Открыть рецепт
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    result.missingIds.length > 0
+                      ? addMissingToShopping(result)
+                      : startCooking(result)
+                  }
+                  disabled={addingRecipeId !== null}
+                  className="rounded-[22px] bg-green-500 px-4 py-4 text-base font-black text-white disabled:opacity-60"
+                >
+                  {result.missingIds.length > 0 ? "В покупки" : "Готовить"}
+                </button>
+              </div>
+            </div>
+
+            <div className="px-6 pb-8 pt-6">
+              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 text-slate-300">
+                <div className="text-left text-sm leading-6">
+                  <div className="text-3xl text-emerald-300">‹</div>
+                  <div>Свайп влево</div>
+                  <div className="text-slate-500">назад</div>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <span className="h-3 w-3 rounded-full bg-emerald-400" />
+                  <span className="h-3 w-3 rounded-full bg-white/35" />
+                  <span className="h-3 w-3 rounded-full bg-white/35" />
+                </div>
+
+                <div className="text-right text-sm leading-6">
+                  <div className="text-3xl text-emerald-300">›</div>
+                  <div>Свайп вправо</div>
+                  <div className="text-slate-500">дальше</div>
+                </div>
+              </div>
+
+              <div className="mt-4 text-center text-sm font-semibold text-slate-300">
+                ↓ Свайп вниз — в избранное
+              </div>
+            </div>
+          </motion.div>
+        </AnimatePresence>
       </div>
     );
   }
@@ -3216,7 +3251,7 @@ export default function AiPage() {
         </motion.header>
 
         <section className="space-y-5 px-5">
-          {!isSearching && renderSwipeRecipeDeck()}
+          {!isSearching && renderDeckModeLauncher()}
 
           <motion.input
             initial={{ opacity: 0, y: 14 }}
@@ -3228,6 +3263,11 @@ export default function AiPage() {
             className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-4 text-base outline-none focus:border-blue-400"
           />
 
+          {!isSearching && recipesNeedRefresh && !matchingRecipes && !loadingSuggested && (
+            <div className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800 ring-1 ring-amber-100">
+              🔄 Подбор рецептов не обновлён. Нажми “Обновить подбор”, когда нужно пересчитать по продуктам дома.
+            </div>
+          )}
 
           {isSearching && (
             <ToggleBlock
@@ -3426,6 +3466,28 @@ export default function AiPage() {
             </>
           )}
         </section>
+
+        <AnimatePresence>
+          {showDeckModal && (
+            <motion.div
+              key="ai-deck-modal"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[90] overflow-y-auto bg-slate-950/55 backdrop-blur-md"
+            >
+              <motion.div
+                initial={{ opacity: 0, y: 28, scale: 0.98 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 28, scale: 0.98 }}
+                transition={{ duration: 0.2 }}
+                className="mx-auto min-h-[100dvh] max-w-md overflow-hidden rounded-none bg-slate-950 shadow-2xl sm:my-5 sm:min-h-[calc(100dvh-40px)] sm:rounded-[32px]"
+              >
+                {renderSwipeRecipeDeck()}
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <AnimatePresence>
           {selectedRecipe && (
