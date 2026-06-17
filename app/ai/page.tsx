@@ -529,7 +529,7 @@ export default function AiPage() {
   useEffect(() => {
     if (!message) return;
 
-    const timer = setTimeout(() => setMessage(""), 2500);
+    const timer = setTimeout(() => setMessage(""), 5000);
     return () => clearTimeout(timer);
   }, [message]);
 
@@ -940,6 +940,158 @@ function hasAnyWord(text: string, words: string[]) {
   return words.some((word) => text.includes(word));
 }
 
+
+const soupWords = [
+  "суп",
+  "борщ",
+  "щи",
+  "уха",
+  "рассольник",
+  "солянк",
+  "шурпа",
+  "окрошк",
+  "лагман",
+  "харчо",
+  "похлебк",
+  "похлёбк",
+];
+
+const saladWords = ["салат", "винегрет"];
+
+const breakfastWords = [
+  "завтрак",
+  "каша",
+  "омлет",
+  "яичниц",
+  "сырник",
+  "олад",
+  "панкейк",
+  "гренк",
+  "тост",
+];
+
+const bakingWords = [
+  "выпечк",
+  "пирог",
+  "пирожк",
+  "булоч",
+  "ватрушк",
+  "лепеш",
+  "лепёш",
+  "хлеб",
+  "кекс",
+  "печень",
+  "бисквит",
+  "пицц",
+  "хачапури",
+  "самса",
+  "чебурек",
+  "беляш",
+];
+
+const dessertWords = [
+  "десерт",
+  "торт",
+  "пирожное",
+  "морожен",
+  "желе",
+  "пудинг",
+  "конфет",
+  "зефир",
+  "мусс",
+];
+
+const drinkWords = [
+  "напит",
+  "чай",
+  "кофе",
+  "компот",
+  "морс",
+  "смузи",
+  "коктейль",
+  "кисель",
+  "лимонад",
+  "сок",
+];
+
+const sideWords = [
+  "гарнир",
+  "рис",
+  "греч",
+  "перлов",
+  "булгур",
+  "кускус",
+  "макарон",
+  "паста",
+  "пюре",
+  "картофельное пюре",
+  "овощи на гарнир",
+  "тушеные овощи",
+  "тушёные овощи",
+];
+
+const proteinWords = [
+  "мяс",
+  "фарш",
+  "говядин",
+  "свинин",
+  "баран",
+  "конин",
+  "куриц",
+  "курин",
+  "индейк",
+  "утк",
+  "рыб",
+  "лосос",
+  "семг",
+  "сёмг",
+  "форел",
+  "скумбр",
+  "минтай",
+  "кревет",
+  "морепродукт",
+  "колбас",
+  "сосиск",
+  "ветчин",
+  "бекон",
+  "котлет",
+  "тефтел",
+  "фрикадел",
+];
+
+function getStrictRecipeKind(recipe: Recipe): RecipeKind {
+  const meta = getRecipeMeta(recipe);
+  const text = recipeQualityText(recipe);
+  const title = normalizeText(recipe.title || "");
+  const category = normalizeText(recipe.category || "");
+  const titleAndCategory = `${title} ${category}`;
+  const hasProtein = hasAnyWord(text, proteinWords);
+
+  if (hasAnyWord(titleAndCategory, soupWords)) return "soup";
+  if (hasAnyWord(titleAndCategory, saladWords)) return "salad";
+  if (hasAnyWord(titleAndCategory, drinkWords)) return "drink";
+  if (hasAnyWord(titleAndCategory, dessertWords)) return "dessert";
+  if (hasAnyWord(titleAndCategory, bakingWords)) return "baking";
+  if (hasAnyWord(titleAndCategory, breakfastWords)) return "breakfast";
+
+  if (hasProtein) return "main";
+
+  if (
+    category.includes("гарнир") ||
+    title.includes("гарнир") ||
+    hasAnyWord(titleAndCategory, sideWords)
+  ) {
+    return "side";
+  }
+
+  if (category.includes("втор") || category.includes("основн")) return "main";
+
+  if (meta.kind === "side" && hasProtein) return "main";
+  if (meta.kind === "soup" && !hasAnyWord(titleAndCategory, soupWords)) return "main";
+
+  return meta.kind;
+}
+
 function usefulIngredientCount(result: MatchResult) {
   return [...result.haveIds, ...result.missingIds].filter(
     (id) => !weakIngredientKeys.has(normalizeIngredientKey(id)),
@@ -959,23 +1111,23 @@ function isBadForMainAi(result: MatchResult) {
 }
 
 function isGoodReadyRecipe(result: MatchResult) {
-  const meta = getRecipeMeta(result.recipe);
+  const kind = getStrictRecipeKind(result.recipe);
 
   if (isBadForMainAi(result)) return false;
   if (result.score !== 100 || result.missingIds.length > 0) return false;
   if (result.total < 3) return false;
   if (usefulIngredientCount(result) < 3) return false;
-  if (meta.kind === "drink" || meta.kind === "other") return false;
+  if (kind === "drink" || kind === "other") return false;
 
   return true;
 }
 
 function isGoodAiResult(result: MatchResult) {
-  const meta = getRecipeMeta(result.recipe);
+  const kind = getStrictRecipeKind(result.recipe);
 
   if (isBadForMainAi(result)) return false;
   if (result.score < 25) return false;
-  if (meta.kind === "drink") return false;
+  if (kind === "drink") return false;
 
   return true;
 }
@@ -989,8 +1141,9 @@ function isKidsCandidate(result: MatchResult) {
   if (meta.isKids) return true;
 
   const hasKidsWord = hasAnyWord(text, kidsTitleWords);
+  const kind = getStrictRecipeKind(result.recipe);
   const goodKind = ["breakfast", "soup", "main", "side", "baking"].includes(
-    meta.kind,
+    kind,
   );
 
   return hasKidsWord && goodKind && result.score >= 45;
@@ -998,6 +1151,7 @@ function isKidsCandidate(result: MatchResult) {
 
 function recipeQualityRank(result: MatchResult, sectionKey = "default") {
   const meta = getRecipeMeta(result.recipe);
+  const kind = getStrictRecipeKind(result.recipe);
   const text = recipeQualityText(result.recipe);
 
   const kindBonus: Record<string, number> = {
@@ -1013,7 +1167,7 @@ function recipeQualityRank(result: MatchResult, sectionKey = "default") {
   };
 
   let rank = result.score * 100;
-  rank += kindBonus[meta.kind] || 0;
+  rank += kindBonus[kind] || 0;
   rank += Math.min(usefulIngredientCount(result), 8) * 12;
   rank += Math.min(result.haveIds.length, 8) * 10;
   rank -= result.missingIds.length * 18;
@@ -1024,7 +1178,7 @@ function recipeQualityRank(result: MatchResult, sectionKey = "default") {
   if (result.recipe.familyFriendly) rank += 35;
   if ((result.recipe.cookingTime || 999) <= 45) rank += 12;
   if (hasAnyWord(text, badReadyTitleWords)) rank -= 220;
-  if (meta.kind === "salad" && sectionKey !== "salad") rank -= 15;
+  if (kind === "salad" && sectionKey !== "salad") rank -= 15;
 
   return rank;
 }
@@ -1553,14 +1707,23 @@ function sectionResults(
       }
     }
 
-    const candidates = Array.from(hitsByRecipeId.entries())
+    const allCandidates = Array.from(hitsByRecipeId.entries())
       .map(([recipeId, hits]) => ({ recipe: suggestedRecipeById.get(recipeId), hits }))
       .filter((item): item is { recipe: Recipe; hits: number } => Boolean(item.recipe))
       .sort((a, b) => {
         if (b.hits !== a.hits) return b.hits - a.hits;
         return a.recipe.title.localeCompare(b.recipe.title, "ru");
-      })
-      .slice(0, 12000)
+      });
+
+    // Важно для скорости: не прогоняем 12 000 рецептов через buildMatch.
+    // Сначала берём рецепты, где совпало минимум 2 продукта из холодильника.
+    // Если таких мало, мягко возвращаем рецепты с 1 совпадением, чтобы выдача не была пустой.
+    const strongCandidates = allCandidates.filter((item) => item.hits >= 2);
+    const candidateSource =
+      strongCandidates.length >= 700 ? strongCandidates : allCandidates;
+
+    const candidates = candidateSource
+      .slice(0, 5000)
       .map((item) => item.recipe);
 
     return candidates;
@@ -1934,7 +2097,7 @@ function sectionResults(
   }, [allMatchedResults, getRecipeMeta, recipeRefreshSeed]);
 
   function recipeKind(result: MatchResult) {
-    return getRecipeMeta(result.recipe).kind;
+    return getStrictRecipeKind(result.recipe);
   }
 
   const mealPlans = useMemo(() => {
@@ -2080,18 +2243,14 @@ function sectionResults(
     const counts = new Map<RecipeKind, { total: number; ready: number }>();
 
     for (const result of allMatchedResults) {
-      const meta = getRecipeMeta(result.recipe);
       if (!isGoodAiResult(result)) continue;
 
-      const kind = meta.kind;
+      const kind = getStrictRecipeKind(result.recipe);
       const current = counts.get(kind) || { total: 0, ready: 0 };
 
       counts.set(kind, {
         total: current.total + 1,
-        ready:
-          result.missingIds.length === 0 && result.score === 100
-            ? current.ready + 1
-            : current.ready,
+        ready: isGoodReadyRecipe(result) ? current.ready + 1 : current.ready,
       });
     }
 
@@ -2116,6 +2275,31 @@ function sectionResults(
       }));
   }, [allMatchedResults, getRecipeMeta]);
 
+  function sortCategoryDeckResults(kind: RecipeKind) {
+    return allMatchedResults
+      .filter((result) => isGoodAiResult(result))
+      .filter((result) => getStrictRecipeKind(result.recipe) === kind)
+      .sort((a, b) => {
+        const aReady = isGoodReadyRecipe(a);
+        const bReady = isGoodReadyRecipe(b);
+
+        // Главное правило категорий: сначала ВСЕ блюда, которые можно приготовить сейчас.
+        // Только после них показываем блюда, где чего-то не хватает, по убыванию процента.
+        if (aReady !== bReady) return aReady ? -1 : 1;
+        if (b.score !== a.score) return b.score - a.score;
+        if (a.missingIds.length !== b.missingIds.length) {
+          return a.missingIds.length - b.missingIds.length;
+        }
+
+        const bRank = recipeQualityRank(b, kind);
+        const aRank = recipeQualityRank(a, kind);
+        if (bRank !== aRank) return bRank - aRank;
+
+        return a.recipe.title.localeCompare(b.recipe.title, "ru");
+      })
+      .slice(0, 160);
+  }
+
   const categoryDeckResults = useMemo(() => {
     const categoryMap = new Map<RecipeKind, MatchResult[]>();
     const kinds = [
@@ -2131,18 +2315,11 @@ function sectionResults(
     ] as RecipeKind[];
 
     for (const kind of kinds) {
-      categoryMap.set(
-        kind,
-        sectionResults(
-          (recipe) => getRecipeMeta(recipe).kind === kind,
-          60,
-          `kind_${kind}`,
-        ),
-      );
+      categoryMap.set(kind, sortCategoryDeckResults(kind));
     }
 
     return categoryMap;
-    // getRecipeKind and sectionResults are pure route-local selection logic.
+    // Category deck must keep all ready recipes first and then lower scores.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allMatchedResults, getRecipeMeta, recipeRefreshSeed]);
 
@@ -2165,14 +2342,22 @@ function sectionResults(
     }
 
     return Array.from(uniqueResults.values()).sort((a, b) => {
+      const aReady = a.score === 100 && a.missingIds.length === 0;
+      const bReady = b.score === 100 && b.missingIds.length === 0;
+      if (aReady !== bReady) return aReady ? -1 : 1;
+
+      const sectionKey =
+        activeDeckMode === "categories" && selectedRecipeKind
+          ? selectedRecipeKind
+          : activeDeckMode;
+      const bRank = recipeQualityRank(b, sectionKey);
+      const aRank = recipeQualityRank(a, sectionKey);
+      if (bRank !== aRank) return bRank - aRank;
       if (b.score !== a.score) return b.score - a.score;
-      const aRandom = seededNumber(
-        `${recipeRefreshSeed}_${activeDeckMode}_${selectedRecipeKind || "none"}_${a.recipe.id}`,
-      );
-      const bRandom = seededNumber(
-        `${recipeRefreshSeed}_${activeDeckMode}_${selectedRecipeKind || "none"}_${b.recipe.id}`,
-      );
-      return bRandom - aRandom;
+      if (a.missingIds.length !== b.missingIds.length) {
+        return a.missingIds.length - b.missingIds.length;
+      }
+      return a.recipe.title.localeCompare(b.recipe.title, "ru");
     });
   }, [
     activeDeckMode,
@@ -2186,6 +2371,10 @@ function sectionResults(
 
   const currentDeckResult =
     deckResults.length > 0 ? deckResults[deckIndex % deckResults.length] : null;
+
+  useEffect(() => {
+    setDeckIndex(0);
+  }, [activeDeckMode, selectedRecipeKind]);
 
   const matchedResultByRecipeId = useMemo(() => {
     const map = new Map<string, MatchResult>();
