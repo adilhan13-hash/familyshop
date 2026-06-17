@@ -27,7 +27,6 @@ import {
   collection,
   deleteDoc,
   doc,
-  getDocs,
   limit,
   onSnapshot,
   orderBy,
@@ -224,6 +223,8 @@ let cachedAiProducts: Product[] | null = null;
 let cachedAiRecipes: Recipe[] | null = null;
 let cachedAiRecipeMetaSource: Recipe[] | null = null;
 let cachedAiRecipeMetaById: Map<string, RecipeMeta> | null = null;
+let cachedRecipeDetailsShards: Record<number, Record<string, Partial<Recipe>>> = {};
+
 
 const ingredientAliases: Record<string, IngredientAlias> = {
   // овощи / зелень
@@ -630,26 +631,11 @@ export default function AiPage() {
   }
 
   const recipeMatchInputs = useMemo(() => {
-    const inputs = new Map<string, RecipeMatchInput>();
-
-    for (const recipe of suggestedRecipes) {
-      const allIds = Array.from(new Set(recipe.ingredientIds || []));
-      const optionalIds = new Set(recipe.optionalIngredientIds || []);
-      const requiredIds = allIds.filter((id) => !optionalIds.has(id));
-      const idsForScore = requiredIds.length > 0 ? requiredIds : allIds;
-      const comparableIdsById: Record<string, string[]> = {};
-
-      for (const id of idsForScore) {
-        comparableIdsById[id] = getComparableIds(id);
-      }
-
-      inputs.set(recipe.id, { idsForScore, comparableIdsById });
-    }
-
-    return inputs;
-    // getComparableIds depends on product catalog maps and aliases.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [suggestedRecipes, productsMap]);
+    // Важно: раньше здесь заранее просчитывались comparableIds для ВСЕХ 13 703 рецептов.
+    // На телефоне это давало длинный первичный просчёт ещё до самого подбора.
+    // Теперь comparableIds считаются лениво только для рецептов-кандидатов в buildMatch().
+    return new Map<string, RecipeMatchInput>();
+  }, []);
 
   function makeShoppingDocId(value: string) {
     return (
@@ -689,27 +675,21 @@ export default function AiPage() {
     return value;
   }
 
-  const recipeMetaById = useMemo(() => {
-    if (
-      cachedAiRecipeMetaSource === suggestedRecipes &&
-      cachedAiRecipeMetaById
-    ) {
-      return cachedAiRecipeMetaById;
+  const getRecipeMeta = useCallback((recipe: Recipe) => {
+    // Важно для скорости: не строим метаданные сразу для всех 13 703 рецептов.
+    // Создаём их лениво только для тех карточек/поиска, которые реально нужны.
+    if (cachedAiRecipeMetaSource !== suggestedRecipes || !cachedAiRecipeMetaById) {
+      cachedAiRecipeMetaSource = suggestedRecipes;
+      cachedAiRecipeMetaById = new Map();
     }
 
-    const metaById = new Map(
-      suggestedRecipes.map((recipe) => [recipe.id, buildRecipeMeta(recipe)]),
-    );
+    const cachedMeta = cachedAiRecipeMetaById.get(recipe.id);
+    if (cachedMeta) return cachedMeta;
 
-    cachedAiRecipeMetaSource = suggestedRecipes;
-    cachedAiRecipeMetaById = metaById;
-
-    return metaById;
+    const meta = buildRecipeMeta(recipe);
+    cachedAiRecipeMetaById.set(recipe.id, meta);
+    return meta;
   }, [suggestedRecipes]);
-
-  const getRecipeMeta = useCallback((recipe: Recipe) => {
-    return recipeMetaById.get(recipe.id) || buildRecipeMeta(recipe);
-  }, [recipeMetaById]);
 
   function getSearchScore(recipe: Recipe, query: string) {
     const searchText = normalizeText(query);
@@ -771,7 +751,52 @@ export default function AiPage() {
     return (hash >>> 0) / 4294967295;
   }
 
-  function sectionResults(
+  
+function recipeDetailsShardIndex(recipeId: string) {
+  let hash = 2166136261;
+
+  for (let index = 0; index < recipeId.length; index += 1) {
+    hash ^= recipeId.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return (hash >>> 0) % 64;
+}
+
+function getFastSearchScore(recipe: Recipe, query: string) {
+  const searchText = normalizeText(query);
+  if (searchText.length < 2) return 0;
+
+  const title = normalizeText(recipe.title || "");
+  const category = normalizeText(recipe.category || "");
+  const ingredientText = normalizeText((recipe.ingredientIds || []).join(" "));
+  const words = searchText.split(" ").filter((word) => word.length >= 2);
+
+  let score = 0;
+
+  if (title === searchText) score += 600;
+  if (title.startsWith(searchText)) score += 420;
+  if (title.includes(searchText)) score += 320;
+  if (category.includes(searchText)) score += 80;
+  if (ingredientText.includes(searchText)) score += 40;
+
+  for (const word of words) {
+    if (title.split(" ").includes(word)) score += 90;
+    else if (title.includes(word)) score += 50;
+    if (category.includes(word)) score += 20;
+    if (ingredientText.includes(word)) score += 10;
+    if (!title.includes(word) && !category.includes(word) && !ingredientText.includes(word)) {
+      score -= 80;
+    }
+  }
+
+  if (recipe.popular) score += 10;
+  if (recipe.familyFriendly) score += 8;
+
+  return Math.max(0, score);
+}
+
+function sectionResults(
     predicate: (recipe: Recipe, result: MatchResult) => boolean,
     take = 20,
     sectionKey = "default",
@@ -920,101 +945,107 @@ export default function AiPage() {
 
     if (cachedAiRecipes) return;
 
-    async function loadAllRecipesFromFirebase() {
+    async function loadAiRecipesFromFile() {
       try {
         setLoadingSuggested(true);
-        setMessage("🔥 Загружаю рецепты из Firebase...");
+        setMessage("📦 Загружаю лёгкую базу рецептов...");
 
-        const recipesSnapshot = await getDocs(collection(db, "recipes"));
+        const response = await fetch("/data/recipes_ai.json");
 
-        const items: Recipe[] = recipesSnapshot.docs.map((recipeDoc, index) => {
-          const rawRecipe = recipeDoc.data();
-          const title = String(
-            rawRecipe.title || rawRecipe.name || "Без названия",
-          );
+        if (!response.ok) {
+          throw new Error(`Recipes AI JSON load failed: ${response.status}`);
+        }
 
-          const tags = Array.isArray(rawRecipe.tags)
-            ? (rawRecipe.tags as RecipeTag[])
-            : [];
+        const rawRecipes = await response.json();
 
-          const rawIngredients = Array.isArray(rawRecipe.rawIngredients)
-            ? (rawRecipe.rawIngredients as RawIngredient[])
-            : [];
+        const items: Recipe[] = Array.isArray(rawRecipes)
+          ? rawRecipes.map((recipe: unknown, index: number) => {
+              const rawRecipe = isRecord(recipe) ? recipe : {};
+              const title = String(
+                rawRecipe.title || rawRecipe.name || "Без названия",
+              );
 
-          return {
-            id: String(rawRecipe.id || rawRecipe.slug || recipeDoc.id || `recipe_${index}`),
-            title,
-            category: String(rawRecipe.category || "Рецепт"),
-            categorySlug: rawRecipe.categorySlug
-              ? String(rawRecipe.categorySlug)
-              : undefined,
-            cuisine: rawRecipe.cuisine ? String(rawRecipe.cuisine) : undefined,
-            difficulty: rawRecipe.difficulty
-              ? String(rawRecipe.difficulty)
-              : undefined,
-            cookingTime:
-              typeof rawRecipe.cookingTime === "number"
-                ? rawRecipe.cookingTime
-                : null,
-            cookingTimeText: rawRecipe.cookingTimeText
-              ? String(rawRecipe.cookingTimeText)
-              : null,
-            prepareTimeText: rawRecipe.prepareTimeText
-              ? String(rawRecipe.prepareTimeText)
-              : null,
-            time: rawRecipe.time ? String(rawRecipe.time) : undefined,
-            description: rawRecipe.description
-              ? String(rawRecipe.description)
-              : undefined,
-            note: rawRecipe.note ? String(rawRecipe.note) : undefined,
-            poster: rawRecipe.poster ? String(rawRecipe.poster) : null,
-            video: rawRecipe.video ? String(rawRecipe.video) : null,
-            tags,
-            popular: Boolean(rawRecipe.popular),
-            familyFriendly: Boolean(rawRecipe.familyFriendly),
-            rawIngredients,
-            ingredientIds: Array.isArray(rawRecipe.ingredientIds)
-              ? rawRecipe.ingredientIds.map(String)
-              : [],
-            optionalIngredientIds: Array.isArray(rawRecipe.optionalIngredientIds)
-              ? rawRecipe.optionalIngredientIds.map(String)
-              : [],
-            steps: Array.isArray(rawRecipe.steps) ? rawRecipe.steps.map(String) : [],
-            stepImages: Array.isArray(rawRecipe.stepImages)
-              ? rawRecipe.stepImages.map(String)
-              : [],
-            source: rawRecipe.source ? String(rawRecipe.source) : undefined,
-            searchTitle: rawRecipe.searchTitle
-              ? String(rawRecipe.searchTitle)
-              : normalizeText(title),
-            searchText: normalizeText(
-              `${title} ${rawRecipe.searchTitle || ""} ${
-                rawRecipe.category || ""
-              } ${rawRecipe.categorySlug || ""} ${rawRecipe.cuisine || ""} ${
-                rawRecipe.difficulty || ""
-              } ${tags
-                .map((tag) => `${tag.name || ""} ${tag.slug || ""}`)
-                .join(" ")} ${rawIngredients
-                .map(
-                  (ingredient) =>
-                    `${ingredient.name || ""} ${ingredient.ingredientId || ""} ${
-                      ingredient.quantity || ""
-                    }`,
-                )
-                .join(" ")}`,
-            ),
-          };
-        });
+              const tags = Array.isArray(rawRecipe.tags)
+                ? (rawRecipe.tags as RecipeTag[])
+                : [];
+
+              const rawIngredients = Array.isArray(rawRecipe.rawIngredients)
+                ? (rawRecipe.rawIngredients as RawIngredient[])
+                : [];
+
+              return {
+                id: String(rawRecipe.id || rawRecipe.slug || `recipe_${index}`),
+                title,
+                category: String(rawRecipe.category || "Рецепт"),
+                categorySlug: rawRecipe.categorySlug
+                  ? String(rawRecipe.categorySlug)
+                  : undefined,
+                cuisine: rawRecipe.cuisine
+                  ? String(rawRecipe.cuisine)
+                  : undefined,
+                difficulty: rawRecipe.difficulty
+                  ? String(rawRecipe.difficulty)
+                  : undefined,
+                cookingTime:
+                  typeof rawRecipe.cookingTime === "number"
+                    ? rawRecipe.cookingTime
+                    : null,
+                cookingTimeText: rawRecipe.cookingTimeText
+                  ? String(rawRecipe.cookingTimeText)
+                  : null,
+                prepareTimeText: rawRecipe.prepareTimeText
+                  ? String(rawRecipe.prepareTimeText)
+                  : null,
+                time: rawRecipe.time ? String(rawRecipe.time) : undefined,
+                description: rawRecipe.description
+                  ? String(rawRecipe.description)
+                  : undefined,
+                note: rawRecipe.note ? String(rawRecipe.note) : undefined,
+                poster: rawRecipe.poster ? String(rawRecipe.poster) : null,
+                video: rawRecipe.video ? String(rawRecipe.video) : null,
+                tags,
+                popular: Boolean(rawRecipe.popular),
+                familyFriendly: Boolean(rawRecipe.familyFriendly),
+                rawIngredients,
+                ingredientIds: Array.isArray(rawRecipe.ingredientIds)
+                  ? rawRecipe.ingredientIds.map(String)
+                  : [],
+                optionalIngredientIds: Array.isArray(rawRecipe.optionalIngredientIds)
+                  ? rawRecipe.optionalIngredientIds.map(String)
+                  : [],
+                steps: Array.isArray(rawRecipe.steps)
+                  ? rawRecipe.steps.map(String)
+                  : [],
+                stepImages: Array.isArray(rawRecipe.stepImages)
+                  ? rawRecipe.stepImages.map(String)
+                  : [],
+                source: rawRecipe.source ? String(rawRecipe.source) : undefined,
+                searchTitle: rawRecipe.searchTitle
+                  ? String(rawRecipe.searchTitle)
+                  : normalizeText(title),
+                searchText: rawRecipe.searchText
+                  ? String(rawRecipe.searchText)
+                  : normalizeText(
+                      `${title} ${rawRecipe.category || ""} ${rawRecipe.categorySlug || ""} ${rawRecipe.cuisine || ""} ${rawRecipe.difficulty || ""} ${rawIngredients
+                        .map(
+                          (ingredient) =>
+                            `${ingredient.name || ""} ${ingredient.ingredientId || ""} ${ingredient.quantity || ""}`,
+                        )
+                        .join(" ")}`,
+                    ),
+              };
+            })
+          : [];
 
         if (active) {
           cachedAiRecipes = items;
           setSuggestedRecipes(items);
-          setMessage(`✅ Firebase рецепты загружены: ${items.length}`);
+          setMessage(`✅ Лёгкая база рецептов загружена: ${items.length}`);
         }
       } catch (error) {
-        console.error("FIREBASE RECIPES LOAD ERROR", error);
+        console.error("LOCAL AI RECIPES LOAD ERROR", error);
         if (active) {
-          setMessage(`Ошибка загрузки рецептов из Firebase: ${String(error)}`);
+          setMessage(`Ошибка загрузки лёгкой базы рецептов: ${String(error)}`);
           setSuggestedRecipes([]);
         }
       } finally {
@@ -1024,7 +1055,7 @@ export default function AiPage() {
       }
     }
 
-    loadAllRecipesFromFirebase();
+    loadAiRecipesFromFile();
 
     return () => {
       active = false;
@@ -1137,7 +1168,7 @@ export default function AiPage() {
       const items = suggestedRecipes
         .map((recipe) => ({
           recipe,
-          searchScore: getSearchScore(recipe, searchText),
+          searchScore: getFastSearchScore(recipe, searchText),
         }))
         .filter((item) => item.searchScore > 0)
         .sort((a, b) => {
@@ -1195,6 +1226,73 @@ export default function AiPage() {
   const suggestedRecipeById = useMemo(() => {
     return new Map(suggestedRecipes.map((recipe) => [recipe.id, recipe]));
   }, [suggestedRecipes]);
+
+
+  const ignoredCandidateIngredientIds = useMemo(() => {
+    return new Set([
+      "sol",
+      "salt",
+      "sahar",
+      "sugar",
+      "perec",
+      "pepper",
+      "black_pepper",
+      "perec_cherniy_molotiy",
+      "perec_chernyy_molotyy",
+      "maslo",
+      "oil",
+      "maslo_rastitelnoe",
+      "maslo_podsolnechnoe",
+      "maslo_olivkovoe",
+      "uksus",
+      "voda",
+      "water",
+      "soda",
+      "razryhlitel",
+      "vanilin",
+      "lavroviy_list",
+      "lavrovyy_list",
+    ]);
+  }, []);
+
+  function getRecipeCandidateScore(recipe: Recipe, usefulFridgeIds: Set<string>) {
+    const allIds = Array.from(new Set(recipe.ingredientIds || []));
+    const optionalIds = new Set(recipe.optionalIngredientIds || []);
+    const requiredIds = allIds.filter((id) => !optionalIds.has(id));
+    const idsForScore = requiredIds.length > 0 ? requiredIds : allIds;
+
+    let hits = 0;
+
+    for (const id of idsForScore) {
+      // Быстрый первичный отбор: без тяжёлого normalizeText/normalizeIngredientKey на каждом ингредиенте.
+      // Нормализация уже есть во fridgeIngredientIds.
+      if (usefulFridgeIds.has(id)) hits += 1;
+    }
+
+    return hits;
+  }
+
+  function getRecipesForMatching() {
+    const usefulFridgeIds = new Set(
+      fridgeIngredientIds.filter(
+        (id) => !ignoredCandidateIngredientIds.has(normalizeIngredientKey(id)),
+      ),
+    );
+
+    const candidates = suggestedRecipes
+      .map((recipe) => ({ recipe, hits: getRecipeCandidateScore(recipe, usefulFridgeIds) }))
+      .filter((item) => item.hits > 0)
+      .sort((a, b) => {
+        if (b.hits !== a.hits) return b.hits - a.hits;
+        return a.recipe.title.localeCompare(b.recipe.title, "ru");
+      })
+      .slice(0, 3500)
+      .map((item) => item.recipe);
+
+    // Если дома только соль/масло/специи, лучше не считать всю базу минуту.
+    // Пользователь увидит пустой подбор и сможет добавить реальные продукты.
+    return candidates;
+  }
 
   function getSavedRecipeCache() {
     if (typeof window === "undefined") return null;
@@ -1379,11 +1477,26 @@ export default function AiPage() {
       setTimeout(resolve, 0);
     });
 
-    const uniqueByTitle = new Map<string, MatchResult>();
-    const chunkSize = 40;
+    const recipesForMatching = getRecipesForMatching();
 
-    for (let index = 0; index < suggestedRecipes.length; index += chunkSize) {
-      const chunk = suggestedRecipes.slice(index, index + chunkSize);
+    if (recipesForMatching.length === 0) {
+      setMatchedResultsState([]);
+      setMatchProgress(100);
+      setRecipesNeedRefresh(false);
+      setMatchingRecipes(false);
+      setMessage("⚠️ Для подбора нужны реальные продукты дома: мясо, овощи, крупы, молочка. Соль/масло/специи не считаю.");
+      return;
+    }
+
+    const uniqueByTitle = new Map<string, MatchResult>();
+    const chunkSize = 700;
+
+    setMessage(
+      `🤖 Считаю ${recipesForMatching.length} подходящих рецептов из ${suggestedRecipes.length}...`,
+    );
+
+    for (let index = 0; index < recipesForMatching.length; index += chunkSize) {
+      const chunk = recipesForMatching.slice(index, index + chunkSize);
 
       chunk
         .map(buildMatch)
@@ -1397,7 +1510,7 @@ export default function AiPage() {
         });
 
       setMatchProgress(
-        Math.round(((index + chunk.length) / suggestedRecipes.length) * 100),
+        Math.round(((index + chunk.length) / Math.max(recipesForMatching.length, 1)) * 100),
       );
 
       await new Promise((resolve) => {
@@ -1861,12 +1974,68 @@ export default function AiPage() {
     return favoriteRecipeIds.has(recipeId);
   }
 
+  async function loadRecipeDetails(recipeId: string) {
+    const shardIndex = recipeDetailsShardIndex(recipeId);
+    const cachedShard = cachedRecipeDetailsShards[shardIndex];
+
+    if (cachedShard) {
+      return cachedShard[recipeId] || null;
+    }
+
+    const response = await fetch(`/data/recipe_details_shards/shard_${shardIndex}.json`);
+
+    if (!response.ok) {
+      throw new Error(`Recipe details shard load failed: ${response.status}`);
+    }
+
+    const shard = (await response.json()) as Record<string, Partial<Recipe>>;
+    cachedRecipeDetailsShards[shardIndex] = shard;
+
+    return shard[recipeId] || null;
+  }
+
+  async function openRecipeResult(result: MatchResult) {
+    setSelectedRecipe(result);
+    setMessage("");
+
+    const hasDetails =
+      (result.recipe.rawIngredients?.length || 0) > 0 ||
+      (result.recipe.steps?.length || 0) > 0 ||
+      Boolean(result.recipe.description || result.recipe.note);
+
+    if (hasDetails) return;
+
+    try {
+      const details = await loadRecipeDetails(result.recipe.id);
+      if (!details) return;
+
+      setSelectedRecipe((current) => {
+        if (!current || current.recipe.id !== result.recipe.id) return current;
+
+        return {
+          ...current,
+          recipe: cleanForFirestore({
+            ...current.recipe,
+            ...details,
+            id: current.recipe.id,
+            title: current.recipe.title,
+            category: details.category || current.recipe.category,
+            ingredientIds: current.recipe.ingredientIds,
+            optionalIngredientIds: current.recipe.optionalIngredientIds,
+          }),
+        } satisfies MatchResult;
+      });
+    } catch (error) {
+      console.warn("AI recipe details load warning", error);
+      setMessage("⚠️ Не получилось загрузить шаги рецепта.");
+    }
+  }
+
   async function openRecipeById(recipeId: string) {
     const cached = matchedResultByRecipeId.get(recipeId);
 
     if (cached) {
-      setSelectedRecipe(cached);
-      setMessage("");
+      void openRecipeResult(cached);
       return;
     }
 
@@ -1877,8 +2046,7 @@ export default function AiPage() {
       return;
     }
 
-    setSelectedRecipe(buildMatch(recipe));
-    setMessage("");
+    void openRecipeResult(buildMatch(recipe));
   }
 
   function showNextDeckRecipe(direction: SwipeDirection) {
@@ -2339,8 +2507,7 @@ export default function AiPage() {
               <button
                 type="button"
                 onClick={() => {
-                  setSelectedRecipe(item);
-                  setMessage("");
+                  void openRecipeResult(item);
                 }}
                 className="min-w-0 flex-1 text-left"
               >
@@ -2454,8 +2621,7 @@ export default function AiPage() {
           animate={{ opacity: 1, y: 0 }}
           whileTap={{ scale: 0.98 }}
           onClick={() => {
-            setSelectedRecipe(result);
-            setMessage("");
+            void openRecipeResult(result);
           }}
           className="w-full overflow-hidden rounded-3xl bg-slate-50 text-left"
         >
@@ -2569,8 +2735,7 @@ export default function AiPage() {
           showNextDeckRecipe("down");
         }}
         onOpenRecipe={(result) => {
-          setSelectedRecipe(result);
-          setMessage("");
+          void openRecipeResult(result);
         }}
         onAddMissingToShopping={addMissingToShopping}
         onStartCooking={startCooking}
