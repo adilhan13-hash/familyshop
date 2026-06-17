@@ -118,6 +118,8 @@ type MatchResult = {
   total: number;
 };
 
+type RecipeIngredientIndex = Record<string, string[]>;
+
 type CachedMatchResult = {
   recipeId: string;
   score: number;
@@ -221,6 +223,7 @@ function buildRecipeMeta(recipe: Recipe): RecipeMeta {
 
 let cachedAiProducts: Product[] | null = null;
 let cachedAiRecipes: Recipe[] | null = null;
+let cachedAiRecipeIngredientIndex: RecipeIngredientIndex | null = null;
 let cachedAiRecipeMetaSource: Recipe[] | null = null;
 let cachedAiRecipeMetaById: Map<string, RecipeMeta> | null = null;
 let cachedRecipeDetailsShards: Record<number, Record<string, Partial<Recipe>>> = {};
@@ -471,6 +474,9 @@ export default function AiPage() {
   const [fridgeItems, setFridgeItems] = useState<FridgeItem[]>([]);
   const [suggestedRecipes, setSuggestedRecipes] = useState<Recipe[]>(
     () => cachedAiRecipes || [],
+  );
+  const [recipeIngredientIndex, setRecipeIngredientIndex] = useState<RecipeIngredientIndex>(
+    () => cachedAiRecipeIngredientIndex || {},
   );
   const [searchRecipes, setSearchRecipes] = useState<Recipe[]>([]);
   const [favoriteRecipes, setFavoriteRecipes] = useState<Recipe[]>([]);
@@ -943,20 +949,30 @@ function sectionResults(
   useEffect(() => {
     let active = true;
 
-    if (cachedAiRecipes) return;
+    if (cachedAiRecipes && cachedAiRecipeIngredientIndex) return;
 
     async function loadAiRecipesFromFile() {
       try {
         setLoadingSuggested(true);
         setMessage("📦 Загружаю лёгкую базу рецептов...");
 
-        const response = await fetch("/data/recipes_ai.json");
+        const [response, indexResponse] = await Promise.all([
+          fetch("/data/recipes_ai.json"),
+          fetch("/data/recipe_ingredient_index.json"),
+        ]);
 
         if (!response.ok) {
           throw new Error(`Recipes AI JSON load failed: ${response.status}`);
         }
 
-        const rawRecipes = await response.json();
+        if (!indexResponse.ok) {
+          throw new Error(`Recipe ingredient index load failed: ${indexResponse.status}`);
+        }
+
+        const [rawRecipes, rawRecipeIndex] = await Promise.all([
+          response.json(),
+          indexResponse.json(),
+        ]);
 
         const items: Recipe[] = Array.isArray(rawRecipes)
           ? rawRecipes.map((recipe: unknown, index: number) => {
@@ -1037,9 +1053,19 @@ function sectionResults(
             })
           : [];
 
+        const parsedRecipeIndex: RecipeIngredientIndex = isRecord(rawRecipeIndex)
+          ? Object.fromEntries(
+              Object.entries(rawRecipeIndex)
+                .filter(([, value]) => Array.isArray(value))
+                .map(([key, value]) => [key, (value as unknown[]).map(String)]),
+            )
+          : {};
+
         if (active) {
           cachedAiRecipes = items;
+          cachedAiRecipeIngredientIndex = parsedRecipeIndex;
           setSuggestedRecipes(items);
+          setRecipeIngredientIndex(parsedRecipeIndex);
           setMessage(`✅ Лёгкая база рецептов загружена: ${items.length}`);
         }
       } catch (error) {
@@ -1047,6 +1073,7 @@ function sectionResults(
         if (active) {
           setMessage(`Ошибка загрузки лёгкой базы рецептов: ${String(error)}`);
           setSuggestedRecipes([]);
+          setRecipeIngredientIndex({});
         }
       } finally {
         if (active) {
@@ -1273,24 +1300,41 @@ function sectionResults(
   }
 
   function getRecipesForMatching() {
-    const usefulFridgeIds = new Set(
-      fridgeIngredientIds.filter(
-        (id) => !ignoredCandidateIngredientIds.has(normalizeIngredientKey(id)),
+    const usefulFridgeIds = Array.from(
+      new Set(
+        fridgeIngredientIds.filter(
+          (id) => !ignoredCandidateIngredientIds.has(normalizeIngredientKey(id)),
+        ),
       ),
     );
 
-    const candidates = suggestedRecipes
-      .map((recipe) => ({ recipe, hits: getRecipeCandidateScore(recipe, usefulFridgeIds) }))
-      .filter((item) => item.hits > 0)
+    const hitsByRecipeId = new Map<string, number>();
+
+    for (const ingredientId of usefulFridgeIds) {
+      const directRecipeIds = recipeIngredientIndex[ingredientId] || [];
+      const normalizedRecipeIds = recipeIngredientIndex[normalizeIngredientKey(ingredientId)] || [];
+
+      for (const recipeId of directRecipeIds) {
+        hitsByRecipeId.set(recipeId, (hitsByRecipeId.get(recipeId) || 0) + 1);
+      }
+
+      if (normalizedRecipeIds !== directRecipeIds) {
+        for (const recipeId of normalizedRecipeIds) {
+          hitsByRecipeId.set(recipeId, (hitsByRecipeId.get(recipeId) || 0) + 1);
+        }
+      }
+    }
+
+    const candidates = Array.from(hitsByRecipeId.entries())
+      .map(([recipeId, hits]) => ({ recipe: suggestedRecipeById.get(recipeId), hits }))
+      .filter((item): item is { recipe: Recipe; hits: number } => Boolean(item.recipe))
       .sort((a, b) => {
         if (b.hits !== a.hits) return b.hits - a.hits;
         return a.recipe.title.localeCompare(b.recipe.title, "ru");
       })
-      .slice(0, 3500)
+      .slice(0, 9000)
       .map((item) => item.recipe);
 
-    // Если дома только соль/масло/специи, лучше не считать всю базу минуту.
-    // Пользователь увидит пустой подбор и сможет добавить реальные продукты.
     return candidates;
   }
 
