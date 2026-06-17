@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import BottomNav from "../../components/BottomNav";
@@ -132,6 +132,23 @@ type RecipeMatchInput = {
   comparableIdsById: Record<string, string[]>;
 };
 
+type RecipeMeta = {
+  title: string;
+  titleWords: string[];
+  titleCategory: string;
+  titleCategoryWords: string[];
+  ingredients: string;
+  tags: string;
+  allText: string;
+  isBad: boolean;
+  isReal: boolean;
+  kind: RecipeKind;
+  quickKind: RecipeKind | "other";
+  isQuick: boolean;
+  isKids: boolean;
+  isHoliday: boolean;
+};
+
 type IngredientAlias = {
   icon: string;
   name: string;
@@ -179,6 +196,34 @@ function normalizeIngredientKey(value: string) {
 function makeLabel(icon: string, name: string) {
   return `${icon || "🛒"} ${name}`;
 }
+
+function buildRecipeMeta(recipe: Recipe): RecipeMeta {
+  const title = normalizeText(recipe.title || "");
+  const titleCategory = getRecipeTitleCategoryText(recipe);
+  const kind = getRecipeKind(recipe);
+
+  return {
+    title,
+    titleWords: title.split(" ").filter(Boolean),
+    titleCategory,
+    titleCategoryWords: titleCategory.split(" ").filter(Boolean),
+    ingredients: getRecipeIngredientText(recipe),
+    tags: getRecipeTagsText(recipe),
+    allText: getRecipeSearchText(recipe),
+    isBad: isBadRecipeForAi(recipe),
+    isReal: isRealDish(recipe),
+    kind,
+    quickKind: getQuickRecipeKind(recipe),
+    isQuick: isQuickRecipe(recipe),
+    isKids: isKidsRecipe(recipe),
+    isHoliday: isHolidayRecipe(recipe),
+  };
+}
+
+let cachedAiProducts: Product[] | null = null;
+let cachedAiRecipes: Recipe[] | null = null;
+let cachedAiRecipeMetaSource: Recipe[] | null = null;
+let cachedAiRecipeMetaById: Map<string, RecipeMeta> | null = null;
 
 const ingredientAliases: Record<string, IngredientAlias> = {
   // овощи / зелень
@@ -419,9 +464,13 @@ export default function AiPage() {
   const { familyId, appUser } = useFamilyAuth();
   const firestoreResumeKey = useFirestoreResumeKey();
 
-  const [products, setProducts] = useState<Product[]>([]);
+  const [products, setProducts] = useState<Product[]>(
+    () => cachedAiProducts || [],
+  );
   const [fridgeItems, setFridgeItems] = useState<FridgeItem[]>([]);
-  const [suggestedRecipes, setSuggestedRecipes] = useState<Recipe[]>([]);
+  const [suggestedRecipes, setSuggestedRecipes] = useState<Recipe[]>(
+    () => cachedAiRecipes || [],
+  );
   const [searchRecipes, setSearchRecipes] = useState<Recipe[]>([]);
   const [favoriteRecipes, setFavoriteRecipes] = useState<Recipe[]>([]);
   const [cookingRecipes, setCookingRecipes] = useState<CookingRecipe[]>([]);
@@ -432,9 +481,13 @@ export default function AiPage() {
     null,
   );
 
-  const [loadingProducts, setLoadingProducts] = useState(true);
+  const [loadingProducts, setLoadingProducts] = useState(
+    () => !cachedAiProducts,
+  );
   const [loadingFridge, setLoadingFridge] = useState(true);
-  const [loadingSuggested, setLoadingSuggested] = useState(true);
+  const [loadingSuggested, setLoadingSuggested] = useState(
+    () => !cachedAiRecipes,
+  );
   const [matchingRecipes, setMatchingRecipes] = useState(false);
   const [matchProgress, setMatchProgress] = useState(0);
   const [matchedResultsState, setMatchedResultsState] = useState<MatchResult[]>(
@@ -636,43 +689,59 @@ export default function AiPage() {
     return value;
   }
 
+  const recipeMetaById = useMemo(() => {
+    if (
+      cachedAiRecipeMetaSource === suggestedRecipes &&
+      cachedAiRecipeMetaById
+    ) {
+      return cachedAiRecipeMetaById;
+    }
+
+    const metaById = new Map(
+      suggestedRecipes.map((recipe) => [recipe.id, buildRecipeMeta(recipe)]),
+    );
+
+    cachedAiRecipeMetaSource = suggestedRecipes;
+    cachedAiRecipeMetaById = metaById;
+
+    return metaById;
+  }, [suggestedRecipes]);
+
+  const getRecipeMeta = useCallback((recipe: Recipe) => {
+    return recipeMetaById.get(recipe.id) || buildRecipeMeta(recipe);
+  }, [recipeMetaById]);
+
   function getSearchScore(recipe: Recipe, query: string) {
     const searchText = normalizeText(query);
     if (searchText.length < 2) return 0;
 
-    const title = normalizeText(recipe.title || "");
-    const titleCategory = getRecipeTitleCategoryText(recipe);
-    const ingredients = getRecipeIngredientText(recipe);
-    const tags = getRecipeTagsText(recipe);
-    const allText = getRecipeSearchText(recipe);
+    const meta = getRecipeMeta(recipe);
     const words = searchText.split(" ").filter((word) => word.length >= 2);
 
     let score = 0;
 
-    if (title === searchText) score += 600;
-    if (title.startsWith(searchText)) score += 420;
-    if (title.includes(searchText)) score += 320;
-    if (titleCategory.includes(searchText)) score += 170;
-    if (tags.includes(searchText)) score += 110;
-    if (ingredients.includes(searchText)) score += 70;
-    if (allText.includes(searchText)) score += 35;
+    if (meta.title === searchText) score += 600;
+    if (meta.title.startsWith(searchText)) score += 420;
+    if (meta.title.includes(searchText)) score += 320;
+    if (meta.titleCategory.includes(searchText)) score += 170;
+    if (meta.tags.includes(searchText)) score += 110;
+    if (meta.ingredients.includes(searchText)) score += 70;
+    if (meta.allText.includes(searchText)) score += 35;
 
     for (const word of words) {
-      const titleWords = title.split(" ");
-      const titleCategoryWords = titleCategory.split(" ");
+      if (meta.titleWords.some((item) => item === word)) score += 110;
+      else if (meta.titleWords.some((item) => item.startsWith(word)))
+        score += 85;
+      else if (meta.title.includes(word)) score += 60;
 
-      if (titleWords.some((item) => item === word)) score += 110;
-      else if (titleWords.some((item) => item.startsWith(word))) score += 85;
-      else if (title.includes(word)) score += 60;
-
-      if (titleCategoryWords.some((item) => item === word)) score += 45;
-      else if (titleCategoryWords.some((item) => item.startsWith(word)))
+      if (meta.titleCategoryWords.some((item) => item === word)) score += 45;
+      else if (meta.titleCategoryWords.some((item) => item.startsWith(word)))
         score += 35;
-      else if (titleCategory.includes(word)) score += 25;
+      else if (meta.titleCategory.includes(word)) score += 25;
 
-      if (tags.includes(word)) score += 20;
-      if (ingredients.includes(word)) score += 12;
-      if (!allText.includes(word)) score -= 120;
+      if (meta.tags.includes(word)) score += 20;
+      if (meta.ingredients.includes(word)) score += 12;
+      if (!meta.allText.includes(word)) score -= 120;
     }
 
     if (score <= 0) return 0;
@@ -681,8 +750,8 @@ export default function AiPage() {
     score += Math.min(match.score, 100);
     score += Math.min(match.haveIds.length * 8, 80);
 
-    if (isBadRecipeForAi(recipe)) score -= 250;
-    if (getRecipeKind(recipe) === "other") score -= 70;
+    if (meta.isBad) score -= 250;
+    if (meta.kind === "other") score -= 70;
     if ((recipe.steps?.length || 0) > 0) score += 20;
     if (recipe.cookingTime && recipe.cookingTime > 0) score += 10;
     if (recipe.popular) score += 12;
@@ -708,7 +777,7 @@ export default function AiPage() {
     sectionKey = "default",
   ) {
     const filteredResults = allMatchedResults.filter((result) => {
-      if (!isRealDish(result.recipe)) return false;
+      if (!getRecipeMeta(result.recipe).isReal) return false;
       if (result.total < 2) return false;
       if (result.score < 25) return false;
       return predicate(result.recipe, result);
@@ -743,6 +812,8 @@ export default function AiPage() {
 
   useEffect(() => {
     let active = true;
+
+    if (cachedAiProducts) return;
 
     async function loadProductsFromFile() {
       try {
@@ -787,6 +858,7 @@ export default function AiPage() {
           : [];
 
         if (active) {
+          cachedAiProducts = items;
           setProducts(items);
         }
       } catch (error) {
@@ -845,6 +917,8 @@ export default function AiPage() {
 
   useEffect(() => {
     let active = true;
+
+    if (cachedAiRecipes) return;
 
     async function loadAllRecipesFromFirebase() {
       try {
@@ -933,6 +1007,7 @@ export default function AiPage() {
         });
 
         if (active) {
+          cachedAiRecipes = items;
           setSuggestedRecipes(items);
           setMessage(`✅ Firebase рецепты загружены: ${items.length}`);
         }
@@ -1241,35 +1316,20 @@ export default function AiPage() {
           return;
         }
 
-        const canUseStoredMatches =
-          parsed.fridgeKey === fridgeSnapshotKey && matches.length > 0;
-        const recipeOrder = new Map<string, number>();
-        recipeIds.forEach((id, index) => recipeOrder.set(id, index));
+        const cachedResults = matches
+          .map((match) => {
+            const recipe = suggestedRecipeById.get(match.recipeId);
+            if (!recipe) return null;
 
-        const cachedResults = canUseStoredMatches
-          ? matches
-              .map((match) => {
-                const recipe = suggestedRecipeById.get(match.recipeId);
-                if (!recipe) return null;
-
-                return {
-                  recipe,
-                  score: match.score,
-                  haveIds: match.haveIds,
-                  missingIds: match.missingIds,
-                  total: match.total,
-                } satisfies MatchResult;
-              })
-              .filter((result): result is MatchResult => Boolean(result))
-          : suggestedRecipes
-              .filter((recipe) => recipeOrder.has(recipe.id))
-              .map(buildMatch)
-              .filter((result) => result.total > 0)
-              .sort((a, b) => {
-                const aIndex = recipeOrder.get(a.recipe.id) ?? 999999;
-                const bIndex = recipeOrder.get(b.recipe.id) ?? 999999;
-                return aIndex - bIndex;
-              });
+            return {
+              recipe,
+              score: match.score,
+              haveIds: match.haveIds,
+              missingIds: match.missingIds,
+              total: match.total,
+            } satisfies MatchResult;
+          })
+          .filter((result): result is MatchResult => Boolean(result));
 
         setMatchedResultsState(cachedResults);
         setRecipesNeedRefresh(parsed.fridgeKey !== fridgeSnapshotKey);
@@ -1398,7 +1458,7 @@ export default function AiPage() {
 
   const suggestedResults = useMemo(() => {
     const cleanResults = allMatchedResults.filter((result) =>
-      isRealDish(result.recipe),
+      getRecipeMeta(result.recipe).isReal,
     );
 
     const perfectResults = cleanResults
@@ -1410,7 +1470,7 @@ export default function AiPage() {
       .slice(0, 7 - perfectResults.length);
 
     return [...perfectResults, ...almostResults];
-  }, [allMatchedResults]);
+  }, [allMatchedResults, getRecipeMeta]);
 
   const quickResults = useMemo(() => {
     if (!showAdvancedBlocks) return [];
@@ -1419,16 +1479,16 @@ export default function AiPage() {
 
     return allMatchedResults
       .filter((result) => {
-        const kind = getQuickRecipeKind(result.recipe);
+        const meta = getRecipeMeta(result.recipe);
         return (
           result.score >= 35 &&
-          allowedKinds.has(kind) &&
-          isQuickRecipe(result.recipe)
+          allowedKinds.has(meta.quickKind) &&
+          meta.isQuick
         );
       })
       .sort((a, b) => {
-        const aKind = getQuickRecipeKind(a.recipe);
-        const bKind = getQuickRecipeKind(b.recipe);
+        const aKind = getRecipeMeta(a.recipe).quickKind;
+        const bKind = getRecipeMeta(b.recipe).quickKind;
         const aTime = a.recipe.cookingTime || 999;
         const bTime = b.recipe.cookingTime || 999;
         const aBonus =
@@ -1464,24 +1524,28 @@ export default function AiPage() {
       .slice(0, 15);
     // Recipe classifiers are pure route-local logic.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allMatchedResults, recipeRefreshSeed]);
+  }, [allMatchedResults, getRecipeMeta, recipeRefreshSeed]);
 
   const kidsResults = useMemo(() => {
-    return sectionResults((recipe) => isKidsRecipe(recipe), 7, "kids");
+    return sectionResults((recipe) => getRecipeMeta(recipe).isKids, 7, "kids");
     // sectionResults is pure route-local selection logic.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allMatchedResults, recipeRefreshSeed]);
+  }, [allMatchedResults, getRecipeMeta, recipeRefreshSeed]);
 
   const holidayResults = useMemo(() => {
     if (!showAdvancedBlocks) return [];
 
-    return sectionResults((recipe) => isHolidayRecipe(recipe), 7, "holiday");
+    return sectionResults(
+      (recipe) => getRecipeMeta(recipe).isHoliday,
+      7,
+      "holiday",
+    );
     // sectionResults is pure route-local selection logic.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allMatchedResults, recipeRefreshSeed]);
+  }, [allMatchedResults, getRecipeMeta, recipeRefreshSeed]);
 
   function recipeKind(result: MatchResult) {
-    return getRecipeKind(result.recipe);
+    return getRecipeMeta(result.recipe).kind;
   }
 
   const mealPlans = useMemo(() => {
@@ -1490,7 +1554,7 @@ export default function AiPage() {
     const usableResults = allMatchedResults.filter(
       (result) =>
         result.score >= 60 &&
-        isRealDish(result.recipe) &&
+        getRecipeMeta(result.recipe).isReal &&
         recipeKind(result) !== "other",
     );
 
@@ -1599,7 +1663,7 @@ export default function AiPage() {
     ].filter(Boolean) as MealPlan[];
     // Meal planning depends on the matched list and user overrides.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allMatchedResults, mealRecipeOverrides]);
+  }, [allMatchedResults, getRecipeMeta, mealRecipeOverrides]);
 
   const searchResults = useMemo(() => {
     return searchRecipes.map(buildMatch).slice(0, 20);
@@ -1613,23 +1677,28 @@ export default function AiPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [favoriteRecipes, fridgeIngredientIds]);
 
+  const favoriteRecipeIds = useMemo(() => {
+    return new Set(favoriteRecipes.map((recipe) => recipe.id));
+  }, [favoriteRecipes]);
+
   const readyResults = useMemo(() => {
     return allMatchedResults.filter(
       (result) =>
-        isRealDish(result.recipe) &&
+        getRecipeMeta(result.recipe).isReal &&
         result.total > 0 &&
         result.missingIds.length === 0 &&
         result.score === 100,
     );
-  }, [allMatchedResults]);
+  }, [allMatchedResults, getRecipeMeta]);
 
   const availableRecipeKinds = useMemo(() => {
     const counts = new Map<RecipeKind, { total: number; ready: number }>();
 
     for (const result of allMatchedResults) {
-      if (!isRealDish(result.recipe) || result.score < 25) continue;
+      const meta = getRecipeMeta(result.recipe);
+      if (!meta.isReal || result.score < 25) continue;
 
-      const kind = getRecipeKind(result.recipe);
+      const kind = meta.kind;
       const current = counts.get(kind) || { total: 0, ready: 0 };
 
       counts.set(kind, {
@@ -1660,7 +1729,7 @@ export default function AiPage() {
         count: counts.get(kind)?.total || 0,
         readyCount: counts.get(kind)?.ready || 0,
       }));
-  }, [allMatchedResults]);
+  }, [allMatchedResults, getRecipeMeta]);
 
   const categoryDeckResults = useMemo(() => {
     const categoryMap = new Map<RecipeKind, MatchResult[]>();
@@ -1680,7 +1749,7 @@ export default function AiPage() {
       categoryMap.set(
         kind,
         sectionResults(
-          (recipe) => getRecipeKind(recipe) === kind,
+          (recipe) => getRecipeMeta(recipe).kind === kind,
           60,
           `kind_${kind}`,
         ),
@@ -1690,7 +1759,7 @@ export default function AiPage() {
     return categoryMap;
     // getRecipeKind and sectionResults are pure route-local selection logic.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allMatchedResults, recipeRefreshSeed]);
+  }, [allMatchedResults, getRecipeMeta, recipeRefreshSeed]);
 
   const deckResults = useMemo(() => {
     const uniqueResults = new Map<string, MatchResult>();
@@ -1733,6 +1802,30 @@ export default function AiPage() {
   const currentDeckResult =
     deckResults.length > 0 ? deckResults[deckIndex % deckResults.length] : null;
 
+  const matchedResultByRecipeId = useMemo(() => {
+    const map = new Map<string, MatchResult>();
+
+    for (const result of [
+      ...suggestedResults,
+      ...quickResults,
+      ...kidsResults,
+      ...holidayResults,
+      ...searchResults,
+      ...favoriteResults,
+    ]) {
+      map.set(result.recipe.id, result);
+    }
+
+    return map;
+  }, [
+    favoriteResults,
+    holidayResults,
+    kidsResults,
+    quickResults,
+    searchResults,
+    suggestedResults,
+  ]);
+
   function getRecipeTime(recipe: Recipe) {
     if (recipe.cookingTimeText) return recipe.cookingTimeText;
     if (recipe.prepareTimeText) return recipe.prepareTimeText;
@@ -1742,7 +1835,7 @@ export default function AiPage() {
   }
 
   function getEstimatedRecipeTime(recipe: Recipe) {
-    const kind = getRecipeKind(recipe);
+    const kind = getRecipeMeta(recipe).kind;
     const stepsCount = recipe.steps?.length || 0;
 
     if (kind === "drink") return "10-15 мин";
@@ -1765,18 +1858,11 @@ export default function AiPage() {
   }
 
   function isFavoriteRecipe(recipeId: string) {
-    return favoriteRecipes.some((recipe) => recipe.id === recipeId);
+    return favoriteRecipeIds.has(recipeId);
   }
 
   async function openRecipeById(recipeId: string) {
-    const cached = [
-      ...suggestedResults,
-      ...quickResults,
-      ...kidsResults,
-      ...holidayResults,
-      ...searchResults,
-      ...favoriteResults,
-    ].find((result) => result.recipe.id === recipeId);
+    const cached = matchedResultByRecipeId.get(recipeId);
 
     if (cached) {
       setSelectedRecipe(cached);
