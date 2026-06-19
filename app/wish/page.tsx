@@ -100,14 +100,59 @@ function formatDate(createdAt?: { seconds: number }) {
 }
 
 function getPriority(priorityId: string) {
-  return priorities.find((priority) => priority.id === priorityId) || priorities[1];
+  return (
+    priorities.find((priority) => priority.id === priorityId) || priorities[1]
+  );
 }
 
-function fileToBase64(file: File) {
+function resizeImageToBase64(file: File) {
   return new Promise<string>((resolve, reject) => {
+    if (!file.type.startsWith("image/")) {
+      reject(new Error("Selected file is not an image"));
+      return;
+    }
+
     const reader = new FileReader();
 
-    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onload = () => {
+      const image = new Image();
+
+      image.onload = () => {
+        const maxSide = 900;
+        const ratio = Math.min(
+          1,
+          maxSide / Math.max(image.width, image.height),
+        );
+        const width = Math.max(1, Math.round(image.width * ratio));
+        const height = Math.max(1, Math.round(image.height * ratio));
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+
+        const context = canvas.getContext("2d");
+        if (!context) {
+          reject(new Error("Canvas is not supported"));
+          return;
+        }
+
+        context.drawImage(image, 0, 0, width, height);
+
+        let quality = 0.72;
+        let base64 = canvas.toDataURL("image/jpeg", quality);
+
+        while (base64.length > 700_000 && quality > 0.35) {
+          quality -= 0.08;
+          base64 = canvas.toDataURL("image/jpeg", quality);
+        }
+
+        resolve(base64);
+      };
+
+      image.onerror = reject;
+      image.src = String(reader.result || "");
+    };
+
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
@@ -135,6 +180,7 @@ export default function WishPage() {
 
   const [showNameSettings, setShowNameSettings] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
+  const [editingItem, setEditingItem] = useState<WishItem | null>(null);
 
   const [title, setTitle] = useState("");
   const [price, setPrice] = useState("");
@@ -220,7 +266,8 @@ export default function WishPage() {
           };
 
           const byPriority =
-            (priorityOrder[a.priority] || 99) - (priorityOrder[b.priority] || 99);
+            (priorityOrder[a.priority] || 99) -
+            (priorityOrder[b.priority] || 99);
 
           if (byPriority !== 0) return byPriority;
 
@@ -260,6 +307,7 @@ export default function WishPage() {
     setImageBase64("");
     setSection("👨 Он");
     setPriority("normal");
+    setEditingItem(null);
   }
 
   async function handleImageChange(event: ChangeEvent<HTMLInputElement>) {
@@ -268,12 +316,43 @@ export default function WishPage() {
     if (!file) return;
 
     try {
-      const base64 = await fileToBase64(file);
+      setMessage("📸 Сжимаю фото...");
+      const base64 = await resizeImageToBase64(file);
       setImageBase64(base64);
+      setMessage("✅ Фото готово к сохранению.");
+      setTimeout(() => setMessage(""), 1800);
     } catch (error) {
       console.error(error);
       setMessage("Не получилось загрузить фото.");
     }
+  }
+
+  function openEditWishItem(item: WishItem) {
+    setEditingItem(item);
+    setTitle(item.title || "");
+    setPrice(item.price || "");
+    setLink(item.link || "");
+    setImageBase64(item.imageBase64 || "");
+    setSection(item.section || "🏠 Дом");
+    setPriority(item.priority || "normal");
+    setShowAddForm(true);
+    setMessage("✏️ Редактирование желания");
+    setTimeout(() => setMessage(""), 1800);
+
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }
+
+  function cancelWishEdit() {
+    resetForm();
+    setShowAddForm(false);
+  }
+
+  function removeSelectedImage() {
+    setImageBase64("");
+    setMessage("Фото убрано из формы.");
+    setTimeout(() => setMessage(""), 1800);
   }
 
   async function saveNames() {
@@ -309,16 +388,47 @@ export default function WishPage() {
       setSaving(true);
       setMessage("");
 
-      await addDoc(collection(db, "families", familyId, "wish"), {
+      const wishPayload = {
         title: cleanTitle,
         price: price.trim(),
         link: link.trim(),
         imageBase64,
         section,
         priority,
-        ownerUid: appUser?.uid || "unknown",
-        ownerName: appUser?.displayName || "Без имени",
-        ownerPhoto: appUser?.photoBase64 || "",
+        ownerUid: editingItem?.ownerUid || appUser?.uid || "unknown",
+        ownerName:
+          editingItem?.ownerName || appUser?.displayName || "Без имени",
+        ownerPhoto: editingItem?.ownerPhoto || appUser?.photoBase64 || "",
+        updatedAt: serverTimestamp(),
+      };
+
+      if (editingItem) {
+        await setDoc(
+          doc(db, "families", familyId, "wish", editingItem.id),
+          wishPayload,
+          { merge: true },
+        );
+
+        await addActivity({
+          familyId,
+          userId: appUser?.uid || "unknown",
+          userName: appUser?.displayName || "Без имени",
+          type: "wish_edit",
+          title: "Изменил желание",
+          message: cleanTitle,
+          emoji: "✏️",
+          itemName: cleanTitle,
+        });
+
+        resetForm();
+        setShowAddForm(false);
+        setMessage("✅ Желание обновлено.");
+        setTimeout(() => setMessage(""), 2500);
+        return;
+      }
+
+      await addDoc(collection(db, "families", familyId, "wish"), {
+        ...wishPayload,
         createdAt: serverTimestamp(),
       });
 
@@ -339,7 +449,11 @@ export default function WishPage() {
       setTimeout(() => setMessage(""), 2500);
     } catch (error) {
       console.error(error);
-      setMessage("Не получилось добавить желание.");
+      setMessage(
+        imageBase64
+          ? "Не получилось сохранить. Фото всё ещё слишком большое — попробуй другое или убери фото."
+          : "Не получилось сохранить желание.",
+      );
     } finally {
       setSaving(false);
     }
@@ -547,10 +661,22 @@ export default function WishPage() {
 
           <button
             type="button"
-            onClick={() => setShowAddForm((current) => !current)}
+            onClick={() => {
+              if (showAddForm) {
+                cancelWishEdit();
+                return;
+              }
+
+              resetForm();
+              setShowAddForm(true);
+            }}
             className="w-full rounded-3xl bg-slate-900 px-5 py-4 text-base font-semibold text-white shadow-sm"
           >
-            {showAddForm ? "Скрыть форму" : "➕ Добавить желание"}
+            {showAddForm
+              ? editingItem
+                ? "Отменить редактирование"
+                : "Скрыть форму"
+              : "➕ Добавить желание"}
           </button>
 
           <AnimatePresence>
@@ -561,7 +687,9 @@ export default function WishPage() {
                 exit={{ opacity: 0, y: -8 }}
                 className="rounded-3xl bg-white p-5 shadow-sm"
               >
-                <h2 className="text-lg font-bold">Новое желание</h2>
+                <h2 className="text-lg font-bold">
+                  {editingItem ? "Редактировать желание" : "Новое желание"}
+                </h2>
 
                 <div className="mt-4 space-y-3">
                   <input
@@ -588,6 +716,10 @@ export default function WishPage() {
 
                   <label className="block rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4 text-center text-sm font-medium text-slate-600">
                     📸 Выбрать фото из галереи
+                    <span className="mt-1 block text-xs font-normal text-slate-400">
+                      Фото автоматически сожмётся, чтобы Firestore сохранил
+                      желание.
+                    </span>
                     <input
                       type="file"
                       accept="image/*"
@@ -604,6 +736,14 @@ export default function WishPage() {
                         alt="Фото желания"
                         className="h-44 w-full object-cover"
                       />
+
+                      <button
+                        type="button"
+                        onClick={removeSelectedImage}
+                        className="w-full bg-white px-4 py-3 text-sm font-semibold text-slate-700"
+                      >
+                        Убрать фото
+                      </button>
                     </div>
                   ) : null}
 
@@ -669,8 +809,24 @@ export default function WishPage() {
                     disabled={saving}
                     className="w-full rounded-2xl bg-green-500 px-4 py-3 font-semibold text-white disabled:opacity-60"
                   >
-                    {saving ? "Добавляю..." : "Добавить желание"}
+                    {saving
+                      ? editingItem
+                        ? "Сохраняю..."
+                        : "Добавляю..."
+                      : editingItem
+                        ? "Сохранить изменения"
+                        : "Добавить желание"}
                   </button>
+
+                  {editingItem ? (
+                    <button
+                      type="button"
+                      onClick={cancelWishEdit}
+                      className="w-full rounded-2xl bg-slate-100 px-4 py-3 font-semibold text-slate-700"
+                    >
+                      Отмена
+                    </button>
+                  ) : null}
                 </div>
               </motion.div>
             ) : null}
@@ -760,7 +916,9 @@ export default function WishPage() {
                               </>
                             ) : (
                               <span>
-                                {(item.ownerName || "П").slice(0, 1).toUpperCase()}
+                                {(item.ownerName || "П")
+                                  .slice(0, 1)
+                                  .toUpperCase()}
                               </span>
                             )}
                           </div>
@@ -787,6 +945,14 @@ export default function WishPage() {
                               🔗 Открыть
                             </a>
                           ) : null}
+
+                          <button
+                            type="button"
+                            onClick={() => openEditWishItem(item)}
+                            className="flex-1 rounded-2xl bg-blue-500 px-4 py-3 text-sm font-semibold text-white"
+                          >
+                            ✏️ Изменить
+                          </button>
 
                           <button
                             type="button"
